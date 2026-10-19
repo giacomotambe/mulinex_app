@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+    <name>robot_model</name>
+    <version>0.0.0</version>
+    <description>Pinocchio-based C++ and Python wrapper providing kinematics and dynamics computation for quadrupedal robots, loading configs from YAML and URDF.</description>
+    <maintainer email="davide.debenedittis@gmail.com">Davide De Benedittis</maintainer>
+    <license>TODO: License declaration</license>
+
+    <author email="davide.debenedittis@gmail.com">Davide De Benedittis</author>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+    <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+    <depend>ament_index_cpp</depend>
+    <depend>ament_index_python</depend>
+    <build_depend>eigen</build_depend>
+    <build_export_depend>eigen</build_export_depend>
+    <depend>pinocchio</depend>
+    <depend>yaml-cpp</depend>
+
+    <exec_depend>mulinex_description</exec_depend>
+    <exec_depend>xacro</exec_depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+</package>

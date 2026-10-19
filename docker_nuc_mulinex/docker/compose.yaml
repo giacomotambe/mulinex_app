@@ -1,0 +1,68 @@
+services:
+  mulinex:
+    build:
+      context: ../
+      dockerfile: docker/DockerFile
+      args:
+        - BASE_IMAGE=osrf/ros
+        - BASE_TAG=humble-desktop-full
+        - MYUID=${UID}
+        - MYGID=${GID}
+        - USER=${USER}
+        - WORKSPACE=mulinex_ws
+
+    image: mulinex:humble
+    container_name: mulinex
+    network_mode: "host"
+    ipc: host
+    privileged: true
+    init: true
+
+    # Interactive shell settings
+    stdin_open: true
+    tty: true
+
+    # Environment variables
+    environment:
+      # GUI
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=/tmp/.docker.xauth
+      # ROS 2
+      - ROS_DOMAIN_ID=10
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - RCUTILS_COLORIZED_OUTPUT=1
+      # Shell history
+      - HISTFILE=/home/.bash_history
+      - HISTFILESIZE=${HISTFILESIZE}
+      # Audio
+      - PULSE_SERVER=unix:${XDG_RUNTIME_DIR}/pulse/native
+      # Misc
+      - MPLCONFIGDIR=/home/${USER}/.matplotlib
+      - XDG_RUNTIME_DIR=/tmp/runtime-${USER}
+
+    group_add:
+      - audio
+
+    volumes:
+      # GUI (X11)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+      # Workspace
+      - ../:/home/${USER}/mulinex_ws/
+      # Devices & shared memory (ROS 2 DDS)
+      - /dev:/dev
+      - /dev/shm:/dev/shm
+      # Shell history
+      - ~/.bash_history:/home/.bash_history
+      # Audio
+      - ${XDG_RUNTIME_DIR}/pulse/native:${XDG_RUNTIME_DIR}/pulse/native
+      # VS Code
+      - ~/.vscode:/home/${USER}/.vscode
+      - ~/.vscode-server:/home/${USER}/.vscode-server
+      - ~/.config/Code:/home/${USER}/.config/Code
+      # PlotJuggler
+      - ~/docker/mulinex/Plotjuggler:/home/${USER}/.config/PlotJuggler
+
+    devices:
+      - /dev/snd:/dev/snd

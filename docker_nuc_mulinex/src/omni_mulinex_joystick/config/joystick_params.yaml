@@ -1,0 +1,39 @@
+omni_mulinex_joystick:
+  ros__parameters:
+    timer_period_ms: 100
+    sup_vel_x: 0.5
+    sup_vel_y: 0.5
+    sup_omega: 0.5
+    height_step: 0.005
+    roll_step: 0.02
+    pitch_step: 0.02
+    yaw_step: 0.02
+    pos_step: 0.005
+    max_height: 0.15
+    max_roll: 0.3
+    max_pitch: 0.3
+    max_yaw: 0.15
+    max_pos_x: 0.05
+    max_pos_y: 0.05
+    deadzone: 0.1
+    subscribe_state: true
+
+    demo:
+      area_width:     0.5
+      area_depth:     0.5
+      travel_time:    1.3
+      pose_time:      2.0
+      yaw_angle:      1.5708
+      pitch_angle:    0.2
+      roll_angle:     0.2
+      base_x:         0.2
+      base_z:         0.05
+
+    # ○ → figure-eight (lemniscate of Gerono, open loop). Sticks or ✕/△/L1/R1 interrupt it.
+    figure_eight:
+      size:        1.0    # [m] half-length of the eight (overall 2·size × size)
+      max_lin_vel: 0.2    # [m/s] peak linear speed
+      max_ang_vel: 0.5    # [rad/s] peak yaw rate (differential mode)
+      laps:        1      # number of eights
+      ramp_time:   3.0    # [s] smooth speed ramp at start and end
+      holonomic:   false  # false = vx + wz (traquad, differential); true = vx/vy, fixed heading

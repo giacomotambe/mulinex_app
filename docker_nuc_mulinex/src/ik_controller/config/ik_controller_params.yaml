@@ -1,0 +1,15 @@
+ik_controller:
+  ros__parameters:
+    robot_name: "mulinex_white"
+    rate: 100.0
+    ik_iterations: 10
+    ik_gain: 2.0
+    ik_alpha: 0.75
+    pos_limit_x: 0.05
+    pos_limit_y: 0.02
+    pos_limit_z: 0.15
+    ang_limit_roll: 0.3
+    ang_limit_pitch: 0.3
+    ang_limit_yaw: 0.15
+    kp_scale: 1.0
+    kd_scale: 1.0

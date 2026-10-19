@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+    <name>omni_bringup</name>
+    <version>0.0.0</version>
+    <description>Launch orchestration package that brings up the joystick teleop and IK controller nodes while recording key system topics to rosbag.</description>
+    <maintainer email="davide.debenedittis@gmail.com">Davide De Benedittis</maintainer>
+    <license>TODO: License declaration</license>
+
+    <author email="davide.debenedittis@gmail.com">Davide De Benedittis</author>
+
+    <depend>rclpy</depend>
+    <depend>std_msgs</depend>
+
+    <exec_depend>launch_ros</exec_depend>
+    <exec_depend>omni_mulinex_joystick</exec_depend>
+    <exec_depend>ik_controller</exec_depend>
+    <exec_depend>ros2bag</exec_depend>
+    <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+
+    <export>
+        <build_type>ament_python</build_type>
+    </export>
+</package>

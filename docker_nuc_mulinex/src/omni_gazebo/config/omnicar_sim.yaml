@@ -1,0 +1,46 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    omni_controller:
+      type: omni_controller/OmniController
+
+omni_controller:
+  ros__parameters:
+    # Wheel joint names must match the URDF joint names (suffix _JNT)
+    wheel_joints:
+      LF: LF_WHEEL_JNT
+      LH: LH_WHEEL_JNT
+      RF: RF_WHEEL_JNT
+      RH: RH_WHEEL_JNT
+    
+    velocity_lpf:
+      enabled: true             # Enable or disable the filter (default: false)
+      cutoff_freq: 1.2          # [Hz] --> 0.175 sec rise time
+    twist_max_x: 0.5
+    twist_max_y: 0.5
+    twist_max_z: 1.0
+
+    # Wheel IK
+    wheel_mode: ik
+    feet_type: mecanum
+    wheel_rad: 0.05
+    driveshaft_x: 0.235
+    driveshaft_y: 0.188
+    mecanum_angle: 135.0
+
+    # Communication
+    input_frequency: 100
+    BestEffort_QOS: true
+
+    # Simulation mode: uses velocity commands on wheels, skips pi3hat interfaces
+    sim: true
+
+    pub_odom: false
+    pub_performance: false
+
+    safety:
+      enabled: false

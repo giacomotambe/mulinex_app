@@ -1,0 +1,9 @@
+[submodule "docker_nuc_mulinex/src/sllidar_ros2"]
+	path = docker_nuc_mulinex/src/sllidar_ros2
+	url = https://github.com/Slamtec/sllidar_ros2.git
+[submodule "docker_nuc_mulinex/src/mulinex_description"]
+	path = docker_nuc_mulinex/src/mulinex_description
+	url = https://github.com/CentroEPiaggio/mulinex_description.git
+[submodule "docker_nuc_mulinex/src/omni_controller"]
+	path = docker_nuc_mulinex/src/omni_controller
+	url = https://github.com/CentroEPiaggio/omni_controller.git

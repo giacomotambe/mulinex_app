@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ik_controller</name>
+  <version>0.0.0</version>
+  <description>Inverse kinematics controller using Pinocchio that computes joint positions from desired base pose commands, keeping foot positions fixed in the world frame.</description>
+  <maintainer email="davide.debenedittis@gmail.com">Davide De Benedittis</maintainer>
+  <license>TODO: License declaration</license>
+
+  <author email="davide.debenedittis@gmail.com">Davide De Benedittis</author>
+
+  <depend>pinocchio</depend>
+  <depend>geometry_msgs</depend>
+  <depend>robot_model</depend>
+  <depend>pi3hat_moteus_int_msgs</depend>
+  <depend>rclpy</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

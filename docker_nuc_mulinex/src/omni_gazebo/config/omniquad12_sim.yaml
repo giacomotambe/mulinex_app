@@ -1,0 +1,64 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    omni_controller:
+      type: omni_controller/OmniController
+
+omni_controller:
+  ros__parameters:
+    # Wheel joint names must match the URDF joint names (suffix _JNT)
+    wheel_joints:
+      LF: LF_WHEEL_JNT
+      LH: LH_WHEEL_JNT
+      RF: RF_WHEEL_JNT
+      RH: RH_WHEEL_JNT
+
+    joints:
+      - LF_HFE
+      - LF_KFE
+      - LH_HFE
+      - LH_KFE
+      - RF_HFE
+      - RF_KFE
+      - RH_HFE
+      - RH_KFE
+
+    # Transitions (rest / stand)
+    rest_duration: 5.0
+    stand_duration: 5.0
+    joint_targets:
+      LF_HFE: { q_rest: 0.0, q_stand: -0.56 }
+      LF_KFE: { q_rest: 0.0, q_stand: 1.8 }
+      LH_HFE: { q_rest: 0.0, q_stand: 0.56 }
+      LH_KFE: { q_rest: 0.0, q_stand: -1.8 }
+      RF_HFE: { q_rest: 0.0, q_stand: 0.56 }
+      RF_KFE: { q_rest: 0.0, q_stand: -1.8 }
+      RH_HFE: { q_rest: 0.0, q_stand: -0.56 }
+      RH_KFE: { q_rest: 0.0, q_stand: 1.8 }
+
+    # Wheel IK
+    wheel_mode: ik
+    feet_type: mecanum
+    wheel_rad: 0.05
+    driveshaft_x: 0.235
+    driveshaft_y: 0.188
+    mecanum_angle: 135.0
+
+    # Communication
+    input_frequency: 100
+    BestEffort_QOS: true
+
+    # Simulation mode: uses velocity (wheels) + effort via PD (legs), skips pi3hat interfaces
+    sim: true
+    sim_kp: 50.0
+    sim_kd: 1.0
+
+    pub_odom: false
+    pub_performance: false
+
+    safety:
+      enabled: false

@@ -1,0 +1,9 @@
+[submodule "src/sllidar_ros2"]
+	path = src/sllidar_ros2
+	url = git@github.com:Slamtec/sllidar_ros2.git
+[submodule "src/mulinex_description"]
+	path = src/mulinex_description
+	url = git@github.com:CentroEPiaggio/mulinex_description.git
+[submodule "src/omni_controller"]
+	path = src/omni_controller
+	url = git@github.com:CentroEPiaggio/omni_controller.git

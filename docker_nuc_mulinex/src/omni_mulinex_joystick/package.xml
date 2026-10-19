@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+    <name>omni_mulinex_joystick</name>
+    <version>0.0.0</version>
+    <description>PS4 joystick teleoperation node that maps controller inputs to twist velocity commands and base pose targets for the omnidirectional robot.</description>
+    <maintainer email="davide.debenedittis@gmail.com">Davide De Benedittis</maintainer>
+    <license>TODO: License declaration</license>
+
+    <author email="davide.debenedittis@gmail.com">Davide De Benedittis</author>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+
+    <depend>rclcpp</depend>
+    <depend>sensor_msgs</depend>
+    <depend>geometry_msgs</depend>
+    <depend>pi3hat_moteus_int_msgs</depend>
+    <depend>std_srvs</depend>
+    <depend>omni_utils</depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+</package>

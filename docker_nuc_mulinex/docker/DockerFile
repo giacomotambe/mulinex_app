@@ -1,0 +1,110 @@
+ARG BASE_IMAGE=osrf/ros
+ARG BASE_TAG=humble-desktop-full
+
+FROM ${BASE_IMAGE}:${BASE_TAG}
+
+# Prevent bash to ask for user input which may break the building process
+ENV DEBIAN_FRONTEND=noninteractive
+
+# RUN is used to execute and add new layer on top of the base immage
+RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
+    --mount=type=cache,sharing=locked,target=/var/lib/apt \
+    apt-get update && apt-get install --no-install-recommends -qqy \
+    chrony \
+    git \
+    iproute2 \
+    iputils-ping \
+    libeigen3-dev \
+    libyaml-cpp-dev \
+    nano \
+    nautilus \
+    pipx \
+    python3-pip \
+    ros-$ROS_DISTRO-joint-state-publisher \
+    ros-$ROS_DISTRO-joint-state-publisher-gui \
+    ros-$ROS_DISTRO-joy \
+    ros-$ROS_DISTRO-pinocchio \
+    ros-$ROS_DISTRO-plotjuggler \
+    ros-$ROS_DISTRO-plotjuggler-ros \
+    ros-$ROS_DISTRO-realsense2-camera \
+    ros-$ROS_DISTRO-realsense2-description \
+    ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
+    ros-$ROS_DISTRO-ros2-control \
+    ros-$ROS_DISTRO-ros2-controllers \
+    ros-$ROS_DISTRO-rosbag2-storage-mcap \
+    ros-$ROS_DISTRO-rviz2 \
+    ros-$ROS_DISTRO-teleop-twist-joy \
+    ros-$ROS_DISTRO-xacro \
+    sudo \
+    tmux \
+    xterm
+
+# Install prompt script to /etc/profile.d so it runs for interactive shells
+COPY docker/ros_prompt.sh /etc/profile.d/ros_prompt.sh
+RUN chmod 755 /etc/profile.d/ros_prompt.sh
+RUN echo 'source /etc/profile.d/ros_prompt.sh' >> /etc/bash.bashrc
+RUN sed -i '1i source /etc/profile.d/ros_prompt.sh' /etc/bash.bashrc || true
+
+ARG MYUID=1000
+ARG MYGID=1000
+ARG USER=ros
+
+RUN OLD_USER=$(awk -v uid="$MYUID" -F ':' '$3==uid {print $1}' /etc/passwd) \
+    && if [ -z "${OLD_USER}" ]; then \
+        # There is no existing UID equal to MYUID.
+        # Create the same user as the host itself. (By default Docker creates the container as root, which is not recommended.)
+        addgroup --gid ${MYGID} ${USER} \
+        && adduser --gecos "ROS User" --disabled-password --uid ${MYUID} --gid ${MYGID} ${USER} \
+        && usermod -a -G dialout ${USER} \
+        && echo ${USER}" ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/99_aptget \
+        && chmod 0440 /etc/sudoers.d/99_aptget && chown root:root /etc/sudoers.d/99_aptget \
+        && mkdir -p /home/${USER} && chown ${USER} /home/${USER} ; \
+    else \
+        usermod -l ${USER} ${OLD_USER} \
+        && sudo usermod -d /home/${USER} -m ${USER} \
+        && echo ${USER}" ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/99_aptget \
+        && chmod 0440 /etc/sudoers.d/99_aptget && chown root:root /etc/sudoers.d/99_aptget \
+        && mkdir -p /home/${USER} && chown ${USER} /home/${USER} ; \
+    fi
+
+# Choose to run as user
+ENV USER=${USER}
+USER ${USER}
+
+# Change HOME environment variable
+ENV HOME=/home/${USER}
+
+# Set up workspace
+ARG WORKSPACE=mulinex_ws
+WORKDIR /home/${USER}/${WORKSPACE}
+
+# Install python packages as user
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+RUN pip3 install --user numpy
+
+# Set up environment and persistent PS1 for interactive shells
+RUN printf '%s\n' "" "## ROS 2" \
+    'source /opt/ros/$ROS_DISTRO/setup.bash' \
+    'source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash' \
+    "source /home/${USER}/${WORKSPACE}/install/setup.bash" \
+    >> ~/.bashrc
+
+# Change entrypoint to source ~/.bashrc and start in ~
+# When building from repo root (context .) the entrypoint is at docker/.config/
+COPY docker/.config/entrypoint.sh /ros_entrypoint.sh
+RUN sudo chmod +x /ros_entrypoint.sh ; sudo chown ${USER} /ros_entrypoint.sh \
+ && echo 'exec bash -i -c "$@"' >> /ros_entrypoint.sh \
+ && cat /ros_entrypoint.sh
+
+# Optional: install Gazebo simulation packages
+ARG INSTALL_GAZEBO=false
+RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
+    --mount=type=cache,sharing=locked,target=/var/lib/apt \
+    if [ "$INSTALL_GAZEBO" = "true" ]; then \
+        sudo apt-get update && sudo apt-get install --no-install-recommends -qqy \
+        ros-$ROS_DISTRO-ign-ros2-control \
+        ros-$ROS_DISTRO-ros-gz ; \
+    fi
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]

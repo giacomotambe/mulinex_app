@@ -1,0 +1,59 @@
+# STRUCTURE
+# robot_name:
+#   pkg_name:               name of the package that contains the robot urdf description.
+#   urdf_path:              path to the urdf of the model used by the controller. This model may be a simplified one.
+#   urdf_args:              optional arguments to pass to xacro when processing .xacro files.
+#   base_name:              name of the base link in the URDF.
+#   n_joints_per_leg:       number of actuated joints per leg.
+#   feet_names:             list of the names of all the robot's feet.
+#   ordered_joint_names:    names of the actuated robot joints in alphabetical order.
+
+# ================================= Mulinex ================================= #
+
+mulinex:
+  pkg_name: mulinex_description
+  urdf_path: /urdf/mulinex.xacro
+  urdf_args:
+    feet_type: normal
+    use_gazebo: "false"
+  base_name: base_link
+  n_joints_per_leg: 2
+  feet_names:
+    - LF_FOOT
+    - LH_FOOT
+    - RF_FOOT
+    - RH_FOOT
+  ordered_joint_names:
+    - LF_HFE
+    - LF_KFE
+    - LH_HFE
+    - LH_KFE
+    - RF_HFE
+    - RF_KFE
+    - RH_HFE
+    - RH_KFE
+
+# =============================== Mulinex White ============================== #
+
+mulinex_white:
+  pkg_name: mulinex_description
+  urdf_path: /urdf/mulinex_white.xacro
+  urdf_args:
+    feet_type: normal
+    use_gazebo: "false"
+  base_name: base_link
+  n_joints_per_leg: 2
+  feet_names:
+    - LF_FOOT
+    - LH_FOOT
+    - RF_FOOT
+    - RH_FOOT
+  ordered_joint_names:
+    - LF_HFE
+    - LF_KFE
+    - LH_HFE
+    - LH_KFE
+    - RF_HFE
+    - RF_KFE
+    - RH_HFE
+    - RH_KFE
