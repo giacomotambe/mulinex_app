@@ -1,9 +1,33 @@
 #include "omni_mulinex_joystick/omni_mulinex_joystick.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <stdexcept>
 
 namespace omni_mulinex_joystick {
+
+namespace {
+
+// Traquad joints for the identification missions. sigma: alpha = sigma·q_HFE (q_stand = sigma·1.6);
+// track sign: joint speed sign for forward belt motion (right side mirrored, as the SBC wheel IK).
+struct Leg {
+    const char* hfe;
+    const char* wheel;
+    double sigma;
+    double track_sign;
+    bool front;
+    bool left;
+};
+constexpr std::array<Leg, 4> kLegs{{
+    {"LF_HFE", "LF_WHEEL", 1.0, 1.0, true, true},
+    {"LH_HFE", "LH_WHEEL", -1.0, 1.0, false, true},
+    {"RF_HFE", "RF_WHEEL", -1.0, -1.0, true, false},
+    {"RH_HFE", "RH_WHEEL", 1.0, -1.0, false, false},
+}};
+
+} // namespace
 
 OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
 {
@@ -37,13 +61,26 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     this->declare_parameter("demo.roll_angle",   0.2);    // radians
     this->declare_parameter("demo.base_x", 0.2);
     this->declare_parameter("demo.base_z", 0.05);
-    // Figure-eight trajectory (○)
+    // Figure-eight trajectory (START)
     this->declare_parameter("figure_eight.size", 1.0);         // metres, half-length of the eight
     this->declare_parameter("figure_eight.max_lin_vel", 0.2);  // m/s
     this->declare_parameter("figure_eight.max_ang_vel", 0.5);  // rad/s
     this->declare_parameter("figure_eight.laps", 1);
     this->declare_parameter("figure_eight.ramp_time", 3.0);    // seconds
     this->declare_parameter("figure_eight.holonomic", false);  // false = differential (vx + wz)
+    // Identification missions (○)
+    this->declare_parameter("identification.mission", "t1");   // t1, t2, t3
+    this->declare_parameter("identification.stand", 1.6);      // rad, shoulder angle of q_stand
+    this->declare_parameter("identification.alphas", std::vector<double>{1.05, 1.3, 1.6, 1.85});
+    this->declare_parameter("identification.sprocket_radius", 0.028);  // m, wheel_rad of the SBC
+    this->declare_parameter("identification.assist_gain", 10.0);       // transition_wheels.gain
+    this->declare_parameter("identification.sync_speed", 0.1);         // m/s
+    this->declare_parameter("identification.stance_tolerance", 0.1);   // rad
+    this->declare_parameter("identification.period_ms", 10);
+    this->declare_parameter("identification.speed_ramp", 0.5);       // s, track speed ramps
+    this->declare_parameter("identification.max_track_speed", 9.0);  // rad/s, drives limited to 10
+    this->declare_parameter("identification.alpha_min", 1.0);        // rad, tracks flat / ankle stops
+    this->declare_parameter("identification.alpha_max", 1.9);
 
     // Read parameters
     sup_vel_x_ = this->get_parameter("sup_vel_x").as_double();
@@ -81,6 +118,7 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     fig8.ramp_time = this->get_parameter("figure_eight.ramp_time").as_double();
     fig8.holonomic = this->get_parameter("figure_eight.holonomic").as_bool();
     figure_eight_ = std::make_unique<FigureEight>(fig8);
+
     RCLCPP_INFO(
         this->get_logger(), "Figure-eight: size=%.2f m, %d lap(s), %s, duration=%.1f s",
         fig8.size, fig8.laps, fig8.holonomic ? "holonomic" : "differential",
@@ -97,6 +135,17 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
 
     // Pose publisher
     pose_pub_ = this->create_publisher<geometry_msgs::msg::Pose>("/ik_controller/base_pose", 1);
+
+    // Identification missions: hips and tracks commanded directly (the controller subscribes Reliable)
+    rclcpp::QoS reliable_qos(5);
+    reliable_qos.reliable();
+    hips_pub_ = this->create_publisher<pi3hat_moteus_int_msgs::msg::JointsCommand>(
+        "/omni_controller/joints_reference", reliable_qos
+    );
+    wheels_pub_ = this->create_publisher<pi3hat_moteus_int_msgs::msg::JointsCommand>(
+        "/omni_controller/direct_wheels_cmd", reliable_qos
+    );
+    segment_pub_ = this->create_publisher<std_msgs::msg::String>("~/identification/segment", 10);
 
     // Joy subscriber
     joy_sub_ = this->create_subscription<sensor_msgs::msg::Joy>(
@@ -121,6 +170,8 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
         this->create_client<std_srvs::srv::SetBool>("/ik_controller/reinitialize_srv");
     ik_activate_client_ =
         this->create_client<std_srvs::srv::SetBool>("/ik_controller/activate_srv");
+    wheel_mode_client_ =
+        this->create_client<std_srvs::srv::SetBool>("/omni_controller/set_wheel_mode");
 
     // Timer
     timer_ = this->create_wall_timer(
@@ -155,6 +206,7 @@ void OmniMulinexJoystick::joy_callback(const sensor_msgs::msg::Joy::SharedPtr ms
         if (!demo_active_) {
             if (figure_eight_active_)
                 stop_figure_eight("demo started");
+            stop_identification("demo started");
             demo_active_ = true;
             transition_demo(DemoPhase::RESET);
             RCLCPP_INFO(this->get_logger(), "Demo started");
@@ -200,12 +252,12 @@ void OmniMulinexJoystick::joy_callback(const sensor_msgs::msg::Joy::SharedPtr ms
     }
 
     // ── Figure-eight ────────────────────────────────────────────────────
-    // ○ (btn 1) → start / stop the figure-eight trajectory
-    if (btn_rising(1)) {
+    // START (btn 9) → start / stop the figure-eight trajectory
+    if (btn_rising(9)) {
         if (figure_eight_active_)
-            stop_figure_eight("○ pressed");
-        else if (demo_active_)
-            RCLCPP_WARN(this->get_logger(), "Figure-eight ignored: demo is running");
+            stop_figure_eight("START pressed");
+        else if (demo_active_ || ident_active_)
+            RCLCPP_WARN(this->get_logger(), "Figure-eight ignored: demo or identification running");
         else
             start_figure_eight();
     }
@@ -215,6 +267,25 @@ void OmniMulinexJoystick::joy_callback(const sensor_msgs::msg::Joy::SharedPtr ms
             stop_figure_eight("stick moved");
         else if (btn_rising(0) || btn_rising(2) || btn_rising(4) || btn_rising(5))
             stop_figure_eight("service button pressed");
+    }
+
+    // ── Identification missions ───────────────────────────────────────────
+    // ○ (btn 1) → start / stop the mission in identification.mission
+    if (btn_rising(1)) {
+        if (ident_active_)
+            stop_identification("○ pressed");
+        else if (demo_active_ || figure_eight_active_)
+            RCLCPP_WARN(this->get_logger(), "Identification ignored: demo or figure-eight running");
+        else
+            start_identification();
+    }
+    // Any stick input or other button takes control back (R1 then still calls the emergency stop)
+    if (ident_active_) {
+        if (joy_left_x_ != 0.0 || joy_left_y_ != 0.0 || joy_right_x_ != 0.0 || joy_right_y_ != 0.0)
+            stop_identification("stick moved");
+        else if (btn_rising(0) || btn_rising(2) || btn_rising(3) || btn_rising(4) || btn_rising(5) ||
+                 btn_rising(8) || btn_rising(9))
+            stop_identification("button pressed");
     }
 
     // ── Services ────────────────────────────────────────────────────────
@@ -560,6 +631,13 @@ void OmniMulinexJoystick::timer_callback()
 
 
 
+    if (ident_active_) {
+        // Tracks and hips are commanded by identification_step(); keep the twist stream alive
+        // (deadline QoS of the controller) with zero velocity
+        twist_pub_->publish(twist_msg);
+        return;
+    }
+
     if (figure_eight_active_) {
         double t = (this->now() - figure_eight_start_time_).seconds();
         twist_msg = figure_eight_->twist_at(t);
@@ -611,9 +689,15 @@ void OmniMulinexJoystick::timer_callback()
 }
 
 void OmniMulinexJoystick::
-    state_callback(const pi3hat_moteus_int_msgs::msg::JointsStates::SharedPtr /*msg*/)
+    state_callback(const pi3hat_moteus_int_msgs::msg::JointsStates::SharedPtr msg)
 {
-    // State available for future logging/monitoring
+    // HFE positions: the identification missions check the stance before starting
+    for (size_t i = 0; i < msg->name.size() && i < msg->position.size(); i++) {
+        for (const auto& leg : kLegs) {
+            if (msg->name[i] == leg.hfe)
+                hfe_pos_[leg.hfe] = msg->position[i];
+        }
+    }
 }
 
 void OmniMulinexJoystick::start_figure_eight()
@@ -629,6 +713,164 @@ void OmniMulinexJoystick::stop_figure_eight(const char* reason)
 {
     figure_eight_active_ = false;
     RCLCPP_INFO(this->get_logger(), "Figure-eight stopped (%s)", reason);
+}
+
+void OmniMulinexJoystick::start_identification()
+{
+    // parameters read at every start: ros2 param set changes the next mission
+    const auto mission = this->get_parameter("identification.mission").as_string();
+    ident_params_.stand = this->get_parameter("identification.stand").as_double();
+    ident_params_.alphas = this->get_parameter("identification.alphas").as_double_array();
+    ident_params_.sprocket_radius = this->get_parameter("identification.sprocket_radius").as_double();
+    ident_params_.assist_gain = this->get_parameter("identification.assist_gain").as_double();
+    ident_params_.sync_speed = this->get_parameter("identification.sync_speed").as_double();
+    ident_stance_tolerance_ = this->get_parameter("identification.stance_tolerance").as_double();
+    ident_period_ms_ = this->get_parameter("identification.period_ms").as_int();
+    ident_params_.speed_ramp = this->get_parameter("identification.speed_ramp").as_double();
+    ident_params_.max_track_speed = this->get_parameter("identification.max_track_speed").as_double();
+    ident_params_.alpha_min = this->get_parameter("identification.alpha_min").as_double();
+    ident_params_.alpha_max = this->get_parameter("identification.alpha_max").as_double();
+    try {
+        ident_ = std::make_unique<IdentificationMission>(mission, ident_params_);
+    } catch (const std::invalid_argument& e) {
+        RCLCPP_ERROR(this->get_logger(), "Identification: %s", e.what());
+        return;
+    }
+    // The missions start from the stand pose: refuse otherwise (they would jump the hips there)
+    if (hfe_pos_.size() < kLegs.size()) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Identification '%s' refused: no HFE positions from /omni_controller/joints_state",
+            mission.c_str()
+        );
+        return;
+    }
+    for (const auto& leg : kLegs) {
+        const double alpha = leg.sigma * hfe_pos_[leg.hfe];
+        if (std::abs(alpha - ident_params_.stand) > ident_stance_tolerance_) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Identification '%s' refused: %s at %.2f rad, not standing at %.2f (press △)",
+                mission.c_str(), leg.hfe, alpha, ident_params_.stand
+            );
+            return;
+        }
+    }
+    if (!wheel_mode_client_->service_is_ready()) {
+        RCLCPP_ERROR(this->get_logger(), "Identification refused: set_wheel_mode not available");
+        return;
+    }
+    deactivate_ik();   // the IK controller would also publish joints_reference
+    auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+    req->data = true;
+    wheel_mode_client_->async_send_request(req);
+
+    ident_active_ = true;
+    ident_start_time_ = this->now();
+    ident_segment_ = 0;
+    ident_last_ = ident_->at(0.0);
+    publish_identification_segment(0, 0.0);
+    ident_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(ident_period_ms_),
+        std::bind(&OmniMulinexJoystick::identification_step, this)
+    );
+    RCLCPP_INFO(
+        this->get_logger(), "Identification '%s' started (%.0f s, %zu segments)", mission.c_str(),
+        ident_->duration(), ident_->num_segments()
+    );
+}
+
+void OmniMulinexJoystick::stop_identification(const char* reason)
+{
+    if (!ident_active_)
+        return;
+    ident_active_ = false;
+    if (ident_timer_) {
+        ident_timer_->cancel();
+        ident_timer_.reset();
+    }
+    // Tracks to zero at once, hips held where they are (the controller then keeps them by its
+    // timeouts); back to the twist (IK) mode so the sticks drive again
+    IdentSetpoint hold = ident_last_;
+    hold.rate_front = hold.rate_hind = 0.0;
+    hold.v_left = hold.v_right = 0.0;
+    publish_identification(hold);
+    auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+    req->data = false;
+    if (wheel_mode_client_->service_is_ready())
+        wheel_mode_client_->async_send_request(req);
+    std_msgs::msg::String msg;
+    msg.data = "{\"mission\": \"" + ident_->name() + "\", \"i\": " +
+               std::to_string(ident_->num_segments()) + ", \"segment\": \"end\", \"reason\": \"" +
+               reason + "\"}";
+    segment_pub_->publish(msg);
+    RCLCPP_INFO(this->get_logger(), "Identification '%s' stopped (%s)", ident_->name().c_str(), reason);
+}
+
+void OmniMulinexJoystick::identification_step()
+{
+    if (!ident_active_)
+        return;
+    const double t = (this->now() - ident_start_time_).seconds();
+    if (ident_->finished(t)) {
+        stop_identification("completed");
+        return;
+    }
+    const size_t i = ident_->segment_at(t);
+    if (i != ident_segment_) {
+        ident_segment_ = i;
+        publish_identification_segment(i, t);
+    }
+    ident_last_ = ident_->at(t);
+    publish_identification(ident_last_);
+}
+
+void OmniMulinexJoystick::publish_identification(const IdentSetpoint& sp)
+{
+    pi3hat_moteus_int_msgs::msg::JointsCommand wheels;
+    pi3hat_moteus_int_msgs::msg::JointsCommand legs;
+    for (const auto& leg : kLegs) {
+        const double alpha = leg.front ? sp.alpha_front : sp.alpha_hind;
+        const double rate = leg.front ? sp.rate_front : sp.rate_hind;
+        const double v = leg.left ? sp.v_left : sp.v_right;
+        // belt speed at the sprocket, plus the stand-up assist of the SBC: -k·q̇_HFE of the same leg
+        wheels.name.push_back(leg.wheel);
+        wheels.velocity.push_back(
+            leg.track_sign * v / ident_params_.sprocket_radius -
+            ident_params_.assist_gain * leg.sigma * rate
+        );
+        wheels.kp_scale.push_back(0.0);
+        wheels.kd_scale.push_back(1.0);
+        legs.name.push_back(leg.hfe);
+        legs.position.push_back(leg.sigma * alpha);
+        legs.velocity.push_back(leg.sigma * rate);
+        legs.effort.push_back(0.0);
+        legs.kp_scale.push_back(1.0);
+        legs.kd_scale.push_back(1.0);
+    }
+    wheels.header.stamp = legs.header.stamp = this->now();
+    wheels_pub_->publish(wheels);
+    hips_pub_->publish(legs);
+}
+
+void OmniMulinexJoystick::publish_identification_segment(size_t i, double t)
+{
+    const auto sp = ident_->at(t);
+    char buf[512];
+    std::snprintf(
+        buf, sizeof(buf),
+        "{\"mission\": \"%s\", \"i\": %zu, \"segment\": \"%s\", \"t\": %.3f, \"alpha_F\": %.4f, "
+        "\"alpha_H\": %.4f, \"v_left\": %.4f, \"v_right\": %.4f, \"hips_moving\": %s}",
+        ident_->name().c_str(), i, ident_->segment_name(i).c_str(), t, sp.alpha_front, sp.alpha_hind,
+        sp.v_left, sp.v_right, ident_->hips_moving(i) ? "true" : "false"
+    );
+    std_msgs::msg::String msg;
+    msg.data = buf;
+    segment_pub_->publish(msg);
+    RCLCPP_INFO(
+        this->get_logger(), "[ID %s] t %6.1f s  %s  alpha %.2f/%.2f  v %+.3f/%+.3f", ident_->name().c_str(),
+        t, ident_->segment_name(i).c_str(), sp.alpha_front, sp.alpha_hind, sp.v_left, sp.v_right
+    );
 }
 
 void OmniMulinexJoystick::deactivate_ik()
@@ -674,8 +916,8 @@ void OmniMulinexJoystick::print_instructions()
                             "║  ───────                                                   ║\n"
                             "║  L1 → ACTIVATE HW     R1 → EMERGENCY STOP                  ║\n"
                             "║  □  → ACTIVATE IK     ✕  → REST                            ║\n"
-                            "║  △  → STAND           ○  → toggle figure-eight             ║\n"
-                            "║  SELECT → toggle demo cycle                                ║\n"
+                            "║  △  → STAND           ○  → start/stop identification       ║\n"
+                            "║  SELECT → toggle demo cycle   START → toggle figure-eight  ║\n"
                             "║  L3 → reset wheels    R3 → reset body pose                 ║\n"
                             "║  PS → reset ALL                                            ║\n"
                             "╚════════════════════════════════════════════════════════════╝"

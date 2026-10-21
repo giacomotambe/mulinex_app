@@ -1,15 +1,19 @@
 #pragma once
 
 #include "omni_mulinex_joystick/figure_eight.hpp"
+#include "omni_mulinex_joystick/identification.hpp"
 #include "omni_utils/quat_math.h"
 
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "pi3hat_moteus_int_msgs/msg/joints_command.hpp"
 #include "pi3hat_moteus_int_msgs/msg/joints_states.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 
+#include <map>
 #include <memory>
 
 namespace omni_mulinex_joystick {
@@ -51,10 +55,18 @@ private:
     void transition_demo(DemoPhase next, double delay_s = 0.7);
     void start_figure_eight();
     void stop_figure_eight(const char* reason);
+    void start_identification();
+    void stop_identification(const char* reason);
+    void identification_step();
+    void publish_identification(const IdentSetpoint& sp);
+    void publish_identification_segment(size_t i, double t);
 
     // Publishers
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_pub_;
     rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr pose_pub_;
+    rclcpp::Publisher<pi3hat_moteus_int_msgs::msg::JointsCommand>::SharedPtr hips_pub_;
+    rclcpp::Publisher<pi3hat_moteus_int_msgs::msg::JointsCommand>::SharedPtr wheels_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr segment_pub_;
 
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
@@ -67,6 +79,7 @@ private:
     rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr stand_client_;
     rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr ik_reinit_client_;
     rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr ik_activate_client_;
+    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr wheel_mode_client_;
 
     // Timer
     rclcpp::TimerBase::SharedPtr timer_;
@@ -109,10 +122,24 @@ private:
     DemoPhase demo_next_phase_{DemoPhase::IDLE};
     double    demo_delay_time_{0.0};
 
-    // Figure-eight trajectory (○ toggles)
+    // Figure-eight trajectory (START toggles)
     std::unique_ptr<FigureEight> figure_eight_;
     bool figure_eight_active_{false};
     rclcpp::Time figure_eight_start_time_;
+
+    // Identification missions (○ toggles the one in identification.mission)
+    IdentificationParams ident_params_;
+    double ident_stance_tolerance_ = 0.1;
+    int ident_period_ms_ = 10;
+    std::unique_ptr<IdentificationMission> ident_;
+    bool ident_active_{false};
+    rclcpp::Time ident_start_time_;
+    size_t ident_segment_ = 0;
+    IdentSetpoint ident_last_;
+    rclcpp::TimerBase::SharedPtr ident_timer_;
+
+    // Measured HFE positions (from /omni_controller/joints_state)
+    std::map<std::string, double> hfe_pos_;
 
     // Stored joystick analog inputs
     double joy_left_x_ = 0.0;

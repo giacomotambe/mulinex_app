@@ -17,10 +17,12 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(pi3hat_moteus_int_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(omni_utils REQUIRED)
 
 add_executable(omni_mulinex_joystick_node src/omni_mulinex_joystick.cpp
                                           src/figure_eight.cpp
+                                          src/identification.cpp
                                           src/main.cpp)
 
 target_include_directories(
@@ -34,6 +36,7 @@ ament_target_dependencies(
     geometry_msgs
     pi3hat_moteus_int_msgs
     std_srvs
+    std_msgs
     omni_utils)
 
 install(TARGETS omni_mulinex_joystick_node DESTINATION lib/${PROJECT_NAME})
