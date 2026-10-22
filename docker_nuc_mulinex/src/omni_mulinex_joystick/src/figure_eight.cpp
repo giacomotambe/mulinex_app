@@ -49,12 +49,21 @@ FigureEight::FigureEight(const FigureEightParams& params): p_(params)
     if (rate_ * ramp_ > total)
         rate_ = total / ramp_;
     cruise_ = total / rate_ - ramp_;
-    duration_ = 2.0 * ramp_ + cruise_;
+    eight_duration_ = 2.0 * ramp_ + cruise_;
+
+    // Unicycle: turn onto the path tangent at the crossing point (cosine yaw-rate profile
+    // peaking at max_ang_vel), and back again at the end.
+    if (!p_.holonomic && p_.max_ang_vel > 0.0) {
+        auto d0 = derivatives(p_.size, 0.0);
+        align_angle_ = std::atan2(d0.dy, d0.dx);
+        align_time_ = std::abs(align_angle_) * M_PI / (2.0 * p_.max_ang_vel);
+    }
+    duration_ = eight_duration_ + 2.0 * align_time_;
 }
 
 double FigureEight::phase_rate(double t) const
 {
-    if (t < 0.0 || t >= duration_)
+    if (t < 0.0 || t >= eight_duration_)
         return 0.0;
     if (t < ramp_)
         return rate_ * 0.5 * (1.0 - std::cos(M_PI * t / ramp_));
@@ -68,7 +77,7 @@ double FigureEight::phase(double t) const
 {
     if (t <= 0.0)
         return 0.0;
-    if (t >= duration_)
+    if (t >= eight_duration_)
         return 2.0 * M_PI * p_.laps;
     if (t < ramp_)
         return rate_ * (0.5 * t - ramp_ / (2.0 * M_PI) * std::sin(M_PI * t / ramp_));
@@ -80,6 +89,28 @@ double FigureEight::phase(double t) const
 }
 
 geometry_msgs::msg::Twist FigureEight::twist_at(double t) const
+{
+    geometry_msgs::msg::Twist twist;
+    if (t < 0.0 || t >= duration_)
+        return twist;
+
+    // In-place turns: +align_angle_ before the eight, −align_angle_ after it
+    double tau = t;
+    double sign = 1.0;
+    if (t >= align_time_ + eight_duration_) {
+        tau = t - align_time_ - eight_duration_;
+        sign = -1.0;
+    } else if (t >= align_time_) {
+        // Body twist: valid as is once the robot is turned onto the path tangent
+        return eight_twist_at(t - align_time_);
+    }
+    if (align_time_ > 0.0)
+        twist.angular.z =
+            sign * align_angle_ * M_PI / (2.0 * align_time_) * std::sin(M_PI * tau / align_time_);
+    return twist;
+}
+
+geometry_msgs::msg::Twist FigureEight::eight_twist_at(double t) const
 {
     geometry_msgs::msg::Twist twist;
     double phi_dot = phase_rate(t);

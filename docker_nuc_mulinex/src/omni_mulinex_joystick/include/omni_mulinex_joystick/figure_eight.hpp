@@ -17,10 +17,14 @@ struct FigureEightParams {
 //
 //   x(φ) = A·sin(φ),   y(φ) = A/2·sin(2φ),   φ ∈ [0, 2π·laps]
 //
-// The phase φ follows a cosine ramp-up / cruise / cosine ramp-down profile, so the
-// twist starts and ends at zero. The cruise phase rate is the largest one that keeps
-// the linear speed (and, in unicycle mode, the yaw rate) within the given limits.
-// The robot starts at the crossing point of the eight, heading along the first lobe.
+// The eight's long axis is aligned with the robot's initial heading, centred on the
+// start position. The phase φ follows a cosine ramp-up / cruise / cosine ramp-down
+// profile, so the twist starts and ends at zero. The cruise phase rate is the largest
+// one that keeps the linear speed (and, in unicycle mode, the yaw rate) within limits.
+//
+// Unicycle mode: the path tangent at the crossing point is not along the long axis, so
+// the robot first turns in place onto it, runs the eight, then turns back to its
+// initial heading.
 class FigureEight {
 public:
     explicit FigureEight(const FigureEightParams& params);
@@ -33,12 +37,16 @@ public:
 private:
     double phase(double t) const;
     double phase_rate(double t) const;
+    geometry_msgs::msg::Twist eight_twist_at(double t) const;
 
     FigureEightParams p_;
     double rate_ = 0.0;     // cruise phase rate [rad/s]
     double ramp_ = 0.0;     // ramp duration [s]
     double cruise_ = 0.0;   // cruise duration [s]
-    double duration_ = 0.0; // total duration [s]
+    double eight_duration_ = 0.0; // duration of the eight itself [s]
+    double align_angle_ = 0.0;    // in-place turn before / after the eight [rad]
+    double align_time_ = 0.0;     // duration of each in-place turn [s]
+    double duration_ = 0.0;       // total duration [s]
 };
 
 } // namespace omni_mulinex_joystick
