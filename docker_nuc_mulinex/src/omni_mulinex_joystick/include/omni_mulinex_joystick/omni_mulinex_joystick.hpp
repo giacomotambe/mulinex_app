@@ -13,8 +13,12 @@
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 
+#include <sys/types.h>
+
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace omni_mulinex_joystick {
 
@@ -44,6 +48,7 @@ enum class DemoPhase {
 class OmniMulinexJoystick: public rclcpp::Node {
 public:
     OmniMulinexJoystick();
+    ~OmniMulinexJoystick() override;
 
 private:
     void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg);
@@ -60,6 +65,8 @@ private:
     void identification_step();
     void publish_identification(const IdentSetpoint& sp);
     void publish_identification_segment(size_t i, double t);
+    void start_bag(const std::string& mission);
+    void stop_bag();
 
     // Publishers
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_pub_;
@@ -137,6 +144,10 @@ private:
     size_t ident_segment_ = 0;
     IdentSetpoint ident_last_;
     rclcpp::TimerBase::SharedPtr ident_timer_;
+
+    // Bag of each mission, recorded by a ros2 bag child process (identification.record_bag)
+    pid_t bag_pid_ = -1;
+    rclcpp::TimerBase::SharedPtr bag_stop_timer_;
 
     // Measured HFE positions (from /omni_controller/joints_state)
     std::map<std::string, double> hfe_pos_;

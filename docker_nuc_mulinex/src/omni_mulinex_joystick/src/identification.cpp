@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 
 namespace omni_mulinex_joystick {
@@ -10,16 +11,27 @@ IdentificationMission::IdentificationMission(
     const std::string& mission, const IdentificationParams& params
 ): p_(params), name_(mission)
 {
-    if (mission == "t1")
-        build_t1();
-    else if (mission == "t2")
-        build_t2();
-    else if (mission == "t3")
-        build_t3();
-    else
-        throw std::invalid_argument(
-            "unknown identification mission '" + mission + "' (t1, t2, t3)"
-        );
+    // one mission, or several in a row separated by commas ("t1,t2,t3"), with a pause at the stand
+    // pose between them (each one starts and ends there with its sync turns)
+    std::stringstream list(mission);
+    std::string item;
+    size_t n = 0;
+    while (std::getline(list, item, ',')) {
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+        if (n++ > 0)
+            hold("pause", p_.pause, p_.stand, p_.stand);
+        if (item == "t1")
+            build_t1();
+        else if (item == "t2")
+            build_t2();
+        else if (item == "t3")
+            build_t3();
+        else
+            throw std::invalid_argument(
+                "unknown identification mission '" + item + "' (t1, t2, t3, or a list as t1,t2,t3)"
+            );
+    }
 
     for (const auto& s : segments_) {
         starts_.push_back(duration_);
@@ -86,6 +98,12 @@ IdentSetpoint IdentificationMission::at(double t) const
     return sp;
 }
 
+IdentSetpoint IdentificationMission::segment_target(size_t i) const
+{
+    const auto& seg = segments_[i];
+    return seg.f(0.5 * seg.duration, starts_[i] + 0.5 * seg.duration);
+}
+
 void IdentificationMission::hold(
     const std::string& name, double dur, double a_front, double a_hind, double v_left,
     double v_right
@@ -136,7 +154,7 @@ void IdentificationMission::build_t1()
     for (double al : p_.alphas) {
         move(4.0, a, a, al, al);
         hold("stop", 2.0, al, al);
-        for (double w : {2.0, 4.0, 7.0}) {
+        for (double w : {4.0, 6.0, 8.0}) {   // below about 3 rad/s the tracks stall while turning
             const double v = w * p_.sprocket_radius;
             hold("spin", 8.0, al, al, -v, v);
             hold("stop", 2.0, al, al);
@@ -151,14 +169,15 @@ void IdentificationMission::build_t1()
 
 void IdentificationMission::build_t2()
 {
-    constexpr double v0 = 0.12;
+    // 6 rad/s at the sprocket; with rho up to 0.33 the inner track keeps 4 rad/s and the outer 8
+    const double v0 = 6.0 * p_.sprocket_radius;
     const double st = p_.stand;
     double a = st;
     sync(st);
     for (double al : p_.alphas) {
         move(4.0, a, a, al, al);
         hold("stop", 2.0, al, al);
-        for (double rho : {0.0, 0.3, -0.3, 0.6, -0.6}) {
+        for (double rho : {0.0, 0.15, -0.15, 0.33, -0.33}) {
             const double vl = v0 * (1.0 - rho), vr = v0 * (1.0 + rho);
             const char* name = rho == 0.0 ? "straight" : "arc";
             hold(name, 5.0, al, al, vl, vr);
@@ -174,7 +193,10 @@ void IdentificationMission::build_t2()
 
 void IdentificationMission::build_t3()
 {
-    constexpr double mean = 1.45, amp = 0.3, period = 10.0, v0 = 0.12, rho = 0.4;
+    // shoulder wave of 15 s: the assist adds at most ±1.3 rad/s to the tracks, so with 6.5 rad/s and
+    // rho 0.12 every track stays within about 4.5-8.5 rad/s
+    constexpr double mean = 1.45, amp = 0.3, period = 15.0, rho = 0.12;
+    const double v0 = 6.5 * p_.sprocket_radius;
     auto front = [=](double t) { return mean + amp * std::sin(2.0 * M_PI * t / period); };
     auto hind = [=](double t) { return mean + amp * std::sin(2.0 * M_PI * t / period + M_PI / 2.0); };
     auto drive = [&](const std::string& name, double dur, double vl, double vr) {

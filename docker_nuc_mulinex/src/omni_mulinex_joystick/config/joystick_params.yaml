@@ -45,15 +45,23 @@ omni_mulinex_joystick:
     #   ros2 param set /omni_mulinex_joystick identification.alphas "[1.3, 1.6]"   (first try: narrow range)
     # t1/t2/t3: robot standing at q_stand (△ first), Qualisys on.
     identification:
-      mission:          "t1"   # t1 (turns in place), t2 (arcs), t3 (validation)
+      mission:          "t1,t2,t3"   # t1 (turns in place), t2 (arcs), t3 (validation), or a list in a row
+      pause:            20.0   # [s] stop at the stand pose between missions in a row
       stand:            1.6    # [rad] shoulder angle of q_stand (traquad8_dji.yaml)
       alphas:           [1.05, 1.3, 1.6, 1.85]  # [rad] shoulder angles of t1 / t2
       sprocket_radius:  0.028  # [m] wheel_rad of the SBC
       assist_gain:      10.0   # transition_wheels.gain of the SBC: track += -k·q̇_HFE
-      sync_speed:       0.1    # [m/s] belt speed of the sync turns (Qualisys clock alignment)
+      sync_speed:       0.168  # [m/s] belt speed of the sync turns (6 rad/s; Qualisys clock alignment)
       stance_tolerance: 0.1    # [rad] shoulders must be within this of stand to start t1-t3
       period_ms:        10     # command period [ms]
       speed_ramp:       0.5    # [s] track speed changes as cosine ramps
       max_track_speed:  9.0    # [rad/s] a mission above this is refused (drives: max_velocity 10)
       alpha_min:        1.0    # [rad] shoulder range of the missions (tracks flat, ankles off
       alpha_max:        1.9    #       their stops); a mission outside it is refused
+      record_bag:       true   # ○ also records a bag of the mission: <bag_dir>/<mission>_<date>_<time>
+      bag_dir:          "~/mulinex_ws/bags/ident"   # in the container (host: docker_nuc_mulinex/bags/ident)
+      record_delay:     3.0    # [s] the bag subscribes first, robot still; then the mission starts
+      bag_topics:       ["/omni_controller/joints_state", "/omni_controller/debug/joints_command",
+                         "/imu_sensor/imu", "/omni_mulinex_joystick/identification/segment",
+                         "/omni_controller/joints_reference", "/omni_controller/direct_wheels_cmd",
+                         "/omni_controller/safety_state", "/omni_controller/distributors_state"]

@@ -1,10 +1,19 @@
 #include "omni_mulinex_joystick/omni_mulinex_joystick.hpp"
 
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
 #include <stdexcept>
+#include <thread>
 
 namespace omni_mulinex_joystick {
 
@@ -69,18 +78,31 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     this->declare_parameter("figure_eight.ramp_time", 3.0);    // seconds
     this->declare_parameter("figure_eight.holonomic", false);  // false = differential (vx + wz)
     // Identification missions (○)
-    this->declare_parameter("identification.mission", "t1");   // t1, t2, t3
+    this->declare_parameter("identification.mission", "t1,t2,t3");   // t1, t2, t3 or a list in a row
+    this->declare_parameter("identification.pause", 20.0);           // s, between missions in a row
     this->declare_parameter("identification.stand", 1.6);      // rad, shoulder angle of q_stand
     this->declare_parameter("identification.alphas", std::vector<double>{1.05, 1.3, 1.6, 1.85});
     this->declare_parameter("identification.sprocket_radius", 0.028);  // m, wheel_rad of the SBC
     this->declare_parameter("identification.assist_gain", 10.0);       // transition_wheels.gain
-    this->declare_parameter("identification.sync_speed", 0.1);         // m/s
+    this->declare_parameter("identification.sync_speed", 0.168);       // m/s (6 rad/s)
     this->declare_parameter("identification.stance_tolerance", 0.1);   // rad
     this->declare_parameter("identification.period_ms", 10);
     this->declare_parameter("identification.speed_ramp", 0.5);       // s, track speed ramps
     this->declare_parameter("identification.max_track_speed", 9.0);  // rad/s, drives limited to 10
     this->declare_parameter("identification.alpha_min", 1.0);        // rad, tracks flat / ankle stops
     this->declare_parameter("identification.alpha_max", 1.9);
+    this->declare_parameter("identification.record_bag", true);   // ros2 bag record per mission
+    this->declare_parameter("identification.bag_dir", std::string("~/mulinex_ws/bags/ident"));
+    this->declare_parameter("identification.record_delay", 3.0);  // s, bag subscribing before the start
+    this->declare_parameter(
+        "identification.bag_topics",
+        std::vector<std::string>{
+            "/omni_controller/joints_state", "/omni_controller/debug/joints_command", "/imu_sensor/imu",
+            "/omni_mulinex_joystick/identification/segment", "/omni_controller/joints_reference",
+            "/omni_controller/direct_wheels_cmd", "/omni_controller/safety_state",
+            "/omni_controller/distributors_state"
+        }
+    );
 
     // Read parameters
     sup_vel_x_ = this->get_parameter("sup_vel_x").as_double();
@@ -730,6 +752,7 @@ void OmniMulinexJoystick::start_identification()
     ident_params_.max_track_speed = this->get_parameter("identification.max_track_speed").as_double();
     ident_params_.alpha_min = this->get_parameter("identification.alpha_min").as_double();
     ident_params_.alpha_max = this->get_parameter("identification.alpha_max").as_double();
+    ident_params_.pause = this->get_parameter("identification.pause").as_double();
     try {
         ident_ = std::make_unique<IdentificationMission>(mission, ident_params_);
     } catch (const std::invalid_argument& e) {
@@ -765,11 +788,17 @@ void OmniMulinexJoystick::start_identification()
     req->data = true;
     wheel_mode_client_->async_send_request(req);
 
+    // The bag subscribes during record_delay, while the robot holds the stand pose: the mission
+    // (and its first segment marker) starts after it
+    double delay = 0.0;
+    if (this->get_parameter("identification.record_bag").as_bool()) {
+        start_bag(mission);
+        delay = this->get_parameter("identification.record_delay").as_double();
+    }
     ident_active_ = true;
-    ident_start_time_ = this->now();
-    ident_segment_ = 0;
+    ident_start_time_ = this->now() + rclcpp::Duration::from_seconds(delay);
+    ident_segment_ = ident_->num_segments();   // no segment yet: the first one is published at t = 0
     ident_last_ = ident_->at(0.0);
-    publish_identification_segment(0, 0.0);
     ident_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(ident_period_ms_),
         std::bind(&OmniMulinexJoystick::identification_step, this)
@@ -805,6 +834,78 @@ void OmniMulinexJoystick::stop_identification(const char* reason)
                reason + "\"}";
     segment_pub_->publish(msg);
     RCLCPP_INFO(this->get_logger(), "Identification '%s' stopped (%s)", ident_->name().c_str(), reason);
+    // keep recording 1 s after the stop (end marker, tracks settling), then close the bag
+    if (bag_pid_ > 0) {
+        bag_stop_timer_ = this->create_wall_timer(std::chrono::seconds(1), [this]() {
+            bag_stop_timer_->cancel();
+            stop_bag();
+        });
+    }
+}
+
+void OmniMulinexJoystick::start_bag(const std::string& mission)
+{
+    stop_bag();   // a previous one still closing
+    std::string dir = this->get_parameter("identification.bag_dir").as_string();
+    if (dir.rfind("~/", 0) == 0 && std::getenv("HOME"))
+        dir = std::string(std::getenv("HOME")) + dir.substr(1);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
+    std::string label = mission;   // "t1,t2,t3" -> "t1-t2-t3"
+    std::replace(label.begin(), label.end(), ',', '-');
+    label.erase(std::remove(label.begin(), label.end(), ' '), label.end());
+    const std::string path = dir + "/" + label + "_" + stamp;
+
+    std::vector<std::string> args{"ros2", "bag", "record", "-o", path};
+    // keep the parameter alive: as_string_array() refers into it
+    const auto topics = this->get_parameter("identification.bag_topics");
+    for (const auto& topic : topics.as_string_array())
+        args.push_back(topic);
+    std::vector<char*> argv;
+    for (auto& a : args)
+        argv.push_back(a.data());
+    argv.push_back(nullptr);
+
+    const pid_t pid = fork();
+    if (pid == 0) {
+        // child: output to <bag>.log, so it does not mix with the joystick log
+        const int fd = open((path + ".log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execvp("ros2", argv.data());
+        _exit(127);
+    }
+    if (pid < 0) {
+        RCLCPP_ERROR(this->get_logger(), "Bag not recorded: fork failed");
+        return;
+    }
+    bag_pid_ = pid;
+    RCLCPP_INFO(this->get_logger(), "Recording bag %s (log %s.log)", path.c_str(), path.c_str());
+}
+
+void OmniMulinexJoystick::stop_bag()
+{
+    if (bag_pid_ <= 0)
+        return;
+    const pid_t pid = bag_pid_;
+    bag_pid_ = -1;
+    kill(pid, SIGINT);   // ros2 bag closes the bag cleanly on SIGINT
+    std::thread([pid]() {
+        int status = 0;
+        waitpid(pid, &status, 0);
+    }).detach();
+    RCLCPP_INFO(this->get_logger(), "Bag closed");
+}
+
+OmniMulinexJoystick::~OmniMulinexJoystick()
+{
+    stop_bag();
 }
 
 void OmniMulinexJoystick::identification_step()
@@ -812,6 +913,11 @@ void OmniMulinexJoystick::identification_step()
     if (!ident_active_)
         return;
     const double t = (this->now() - ident_start_time_).seconds();
+    if (t < 0.0) {
+        // waiting for the bag: hold the stand pose, tracks still
+        publish_identification(ident_last_);
+        return;
+    }
     if (ident_->finished(t)) {
         stop_identification("completed");
         return;
@@ -855,7 +961,7 @@ void OmniMulinexJoystick::publish_identification(const IdentSetpoint& sp)
 
 void OmniMulinexJoystick::publish_identification_segment(size_t i, double t)
 {
-    const auto sp = ident_->at(t);
+    const auto sp = ident_->segment_target(i);   // what the segment holds, not the start of its ramp
     char buf[512];
     std::snprintf(
         buf, sizeof(buf),

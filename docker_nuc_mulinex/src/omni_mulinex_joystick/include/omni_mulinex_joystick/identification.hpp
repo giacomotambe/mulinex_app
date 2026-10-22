@@ -11,12 +11,13 @@ struct IdentificationParams {
     std::vector<double> alphas{1.05, 1.3, 1.6, 1.85}; // shoulder angles of T1 / T2 [rad]
     double sprocket_radius = 0.028;                  // wheel_rad of the SBC wheel IK [m]
     double assist_gain = 10.0;                       // transition_wheels.gain of the SBC yaml
-    double sync_speed = 0.1;                         // belt speed of the sync turns [m/s]
+    double sync_speed = 0.168;                       // belt speed of the sync turns [m/s] (6 rad/s)
     double speed_ramp = 0.5;                         // track speed changes as cosine ramps of this [s] (t1-t3)
     double max_track_speed = 9.0;                    // largest track joint command, assist included [rad/s]
                                                      // (the drives are limited to 10, max_velocity in the SBC xacro)
     double alpha_min = 1.0;                          // shoulder range: tracks flat, ankles off their stops [rad]
     double alpha_max = 1.9;
+    double pause = 20.0;                             // stop at the stand pose between missions in a row [s]
 };
 
 // Set point of an identification mission: shoulder angles alpha = sigma·q_HFE (sigma = +1 LF/RH,
@@ -33,12 +34,15 @@ struct IdentSetpoint {
 
 // Open-loop identification missions of the traquad, as fixed sequences of segments:
 //
-//   t1           turns in place at each shoulder angle, track joint speeds 2, 4, 7 rad/s, both
+//   t1           turns in place at each shoulder angle, track joint speeds 4, 6, 8 rad/s, both
 //                directions, 8 s each
-//   t2           straight runs and arcs (belt speeds v0·(1 ∓ rho), rho = 0, ±0.3, ±0.6) at each
-//                shoulder angle, 5 s forward then 5 s back over the same path
-//   t3           validation: arcs and a turn while the shoulders move all the time, front and hind
-//                a quarter period out of phase
+//   t2           straight runs and arcs (track speeds 6·(1 ∓ rho) rad/s, rho = 0, ±0.15, ±0.33) at
+//                each shoulder angle, 5 s forward then 5 s back over the same path
+//   t3           validation: arcs and a turn while the shoulders move all the time (15 s wave), front
+//                and hind a quarter period out of phase
+//
+// Below about 3 rad/s the tracks stall while turning (speed loop K_d only): every moving track is
+// kept within about 4-8 rad/s, assist included.
 //
 // t1-t3 start and end at the stand angle with a sync pattern (turns in place of 1 s and 2 s): the
 // Qualisys, recorded on another computer, is aligned to the robot bag by the yaw rate. Their track
@@ -47,10 +51,12 @@ struct IdentSetpoint {
 // std::invalid_argument if a mission would exceed them.
 class IdentificationMission {
 public:
-    /// mission: "t1", "t2" or "t3" (std::invalid_argument otherwise).
+    /// mission: "t1", "t2", "t3", or several in a row as "t1,t2,t3" (std::invalid_argument otherwise).
     IdentificationMission(const std::string& mission, const IdentificationParams& params);
 
     IdentSetpoint at(double t) const;
+    /// Set point of segment i once its speed ramp is over (shoulders and speeds it is meant to hold)
+    IdentSetpoint segment_target(size_t i) const;
     size_t segment_at(double t) const;
     const std::string& segment_name(size_t i) const { return segments_[i].name; }
     bool hips_moving(size_t i) const { return segments_[i].hips_moving; }
