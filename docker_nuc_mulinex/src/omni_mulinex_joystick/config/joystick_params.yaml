@@ -56,10 +56,32 @@ omni_mulinex_joystick:
       kp_scale:         1.0    # hip stiffness (1 = Kp 60 of the SBC); lower it to add compliance
       kd_scale:         1.0
       stand:            1.6    # [rad]
-      alpha_min:        1.0    # [rad]
-      alpha_max:        1.9    # [rad]
+      alpha_min:        1.1    # [rad] hips at stand ± delta: room for the arc band posture (band.delta_max 0.45)
+      alpha_max:        2.1    # [rad] (ankle stops at ±90 deg; check that the tracks clear the body before raising)
       stance_tolerance: 0.15   # [rad] R2 starts only standing at stand
       period_ms:        10     # [ms]
+      # Arc band: a commanded radius R = vx/wz close to the effective half track y_eff(δ) asks the inner track ~0
+      # (it pivots and the ground can roll it over). When R stays in the band for dwell, δ moves (stronger: inner
+      # track forward, or weaker: backward, the side that moves the hips less) until the inner track runs at least
+      # at v_min; back to the normal posture when R leaves the band (+ hysteresis) for dwell. y_eff(δ) = model of
+      # the SBC traquad IK; the IK reads the measured hips, so vx and wz stay exact. The SBC
+      # traquad.min_track_speed covers the time the hips take to move
+      band:
+        enabled:       true
+        v_min:         1.5    # [rad/s] inner track, as traquad.min_track_speed
+        delta_max:     0.45   # [rad] strongest posture (hips 2.05 / 1.15); y_eff about 0.43 m (measured up to δ 0.36)
+        hysteresis:    0.3    # fraction of the radius margin
+        dwell:         0.3    # [s]
+        wz_max:        1.0    # [rad/s] twist_max_z of the SBC
+        wheel_rad:     0.045  # [m]   SBC traquad8_dji.yaml
+        half_track:    0.2    # [m]   track_width / 2
+        yaw_slip_gain: 1.35   # γ     traquad.yaw_slip_gain
+        posture_gain:  0.29   # kδ    traquad.yaw_posture_gain [m/rad]
+        shoulder_x:    0.235  # [m]
+        leg_length:    0.19   # [m]
+        creep_gain:    1.6    # traquad.creep.gain [1/rad]
+        creep_x0:      0.171  # traquad.creep.x0 [m]
+        creep_posture: 0.09   # traquad.creep.posture [m/rad²]
 
     # ○ → identification mission (open loop, tracks and hips commanded directly, wheel mode
     # direct during the mission). Sticks or any other button stop it: tracks to zero, hips held,
@@ -78,11 +100,12 @@ omni_mulinex_joystick:
       stance_tolerance: 0.1    # [rad] shoulders must be within this of stand to start t1-t3
       period_ms:        10     # command period [ms]
       speed_ramp:       0.5    # [s] track speed changes as cosine ramps
-      max_track_speed:  9.0    # [rad/s] a mission above this is refused (drives: max_velocity 10)
+      max_track_speed:  10.0   # [rad/s] a mission above this is refused (track drives: max_velocity 25)
       alpha_min:        1.0    # [rad] shoulder range of the missions (tracks flat, ankles off
       alpha_max:        1.9    #       their stops); a mission outside it is refused
-      spin_forward_drift: 0.066  # [m/rad] both tracks slowed by d·|ωz| (the robot creeps forward while
-      yaw_half_track:   0.556  # [m]   turning): the missions stay in a 2 x 2 m area. 0 = off
+      creep_gain:       1.6    # [1/rad] the robot creeps forward by d·|ωz| while turning, d = gain·(X̄ − x0):
+      creep_x0:         0.171  # [m]     both tracks slowed by it, the missions stay in a 2 x 2 m area
+      yaw_slip_gain:    1.35   # γ of the SBC traquad IK (expected yaw rate). creep_gain 0 = off
       record_bag:       true   # ○ also records a bag of the mission: <bag_dir>/<mission>_<date>_<time>
       bag_dir:          "~/mulinex_ws/bags/ident"   # in the container (host: docker_nuc_mulinex/bags/ident)
       record_delay:     3.0    # [s] the bag subscribes first, robot still; then the mission starts

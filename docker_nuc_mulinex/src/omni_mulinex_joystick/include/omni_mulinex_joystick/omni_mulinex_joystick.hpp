@@ -68,6 +68,7 @@ private:
     void start_yaw_posture();
     void stop_yaw_posture(const char* reason, bool smooth);
     void yaw_posture_step();
+    double yaw_posture_band(double target, double dt);
     void start_bag(const std::string& mission);
     void stop_bag();
 
@@ -157,6 +158,11 @@ private:
     double posture_filter_ = 0.0;     // first filter stage of delta [rad]
     double posture_vx_cmd_ = 0.0;     // last commanded twist (sticks)
     double posture_wz_cmd_ = 0.0;
+    // Arc band of R2 (yaw_posture.band): the commanded radius close to y_eff stops the inner track
+    bool band_active_{false};
+    int band_side_ = 0;               // +1 posture stronger (inner track forward), −1 weaker (backward)
+    double band_in_time_ = 0.0;       // [s] commanded radius in the band
+    double band_out_time_ = 0.0;      // [s] commanded radius out of it (hysteresis)
     rclcpp::TimerBase::SharedPtr posture_timer_;
 
     // Bag of each mission, recorded by a ros2 bag child process (identification.record_bag)

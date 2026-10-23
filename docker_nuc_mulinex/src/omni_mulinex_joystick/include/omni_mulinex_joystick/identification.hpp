@@ -13,17 +13,23 @@ struct IdentificationParams {
     double assist_gain = 10.0;                       // transition_wheels.gain of the SBC yaml
     double sync_speed = 0.27;                        // belt speed of the sync turns [m/s] (6 rad/s)
     double speed_ramp = 0.5;                         // track speed changes as cosine ramps of this [s] (t1-t3)
-    double max_track_speed = 9.0;                    // largest track joint command, assist included [rad/s]
-                                                     // (the drives are limited to 10, max_velocity in the SBC xacro)
+    double max_track_speed = 10.0;                   // largest track joint command, assist included [rad/s]
+                                                     // (track drives: max_velocity 25 in the SBC xacro)
     double alpha_min = 1.0;                          // shoulder range: tracks flat, ankles off their stops [rad]
     double alpha_max = 1.9;
     double pause = 20.0;                             // stop at the stand pose between missions in a row [s]
-    // The robot creeps forward by d·|ωz| while turning (Qualisys 2026-10-22): both tracks are slowed
-    // by d·|ωz_expected| so that the missions stay in a 2 x 2 m area. ωz_expected is the yaw rate the
-    // tracks give once they lose turn_deficit·load each (load 0 straight, 1 turning in place) through
-    // yaw_half_track. 0 disables it (traquad8_dji.yaml traquad.spin_forward_drift)
-    double spin_forward_drift = 0.066;               // [m/rad]
-    double yaw_half_track = 0.556;                   // [m] traquad.yaw_half_track of the SBC
+    // The robot creeps forward by d·|ωz| while turning, more with the tracks spread out (Qualisys
+    // 2026-10-22, the SBC traquad IK model): both tracks are slowed by d·|ωz_expected| so that the
+    // missions stay in a 2 x 2 m area, with X̄ = mean(shoulder_x + leg_length·cos α) of the set point,
+    //   d = max(creep_gain·(X̄ − creep_x0), 0),   y_eff = h·(1 + yaw_slip_gain·(X̄/h)²)
+    // and ωz_expected the yaw rate the tracks give once they lose turn_deficit·load each (load 0
+    // straight, 1 turning in place) through y_eff. creep_gain 0 disables it
+    double creep_gain = 1.6;                         // [1/rad]  traquad.creep.gain of the SBC
+    double creep_x0 = 0.171;                         // [m]      traquad.creep.x0
+    double yaw_slip_gain = 1.35;                     // γ        traquad.yaw_slip_gain
+    double half_track = 0.2;                         // [m]      track_width / 2
+    double shoulder_x = 0.235;                       // [m]
+    double leg_length = 0.19;                        // [m]
     double turn_deficit = 2.0;                       // [rad/s] track deficit turning in place
 };
 
@@ -49,7 +55,7 @@ struct IdentSetpoint {
 //                the shoulders move all the time (15 s wave), front and hind a quarter period out of phase
 //
 // Below about 3 rad/s the tracks stall while turning (speed loop K_d only): every moving track is
-// kept within about 4-8 rad/s, assist included.
+// kept within about 4-9.6 rad/s, assist and creep compensation included.
 //
 // All of them stay in a 2 x 2 m area (robot started at its centre; simulated with the Qualisys model of
 // 2026-10-22): short legs there and back, and both tracks slowed by the forward creep while turning.

@@ -88,11 +88,12 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     this->declare_parameter("identification.stance_tolerance", 0.1);   // rad
     this->declare_parameter("identification.period_ms", 10);
     this->declare_parameter("identification.speed_ramp", 0.5);       // s, track speed ramps
-    this->declare_parameter("identification.max_track_speed", 9.0);  // rad/s, drives limited to 10
+    this->declare_parameter("identification.max_track_speed", 10.0);  // rad/s, track drives limited to 25
     this->declare_parameter("identification.alpha_min", 1.0);        // rad, tracks flat / ankle stops
     this->declare_parameter("identification.alpha_max", 1.9);
-    this->declare_parameter("identification.spin_forward_drift", 0.066);  // m/rad, 0 = off
-    this->declare_parameter("identification.yaw_half_track", 0.556);      // m
+    this->declare_parameter("identification.creep_gain", 1.6);      // 1/rad, 0 = off (traquad.creep.gain)
+    this->declare_parameter("identification.creep_x0", 0.171);      // m (traquad.creep.x0)
+    this->declare_parameter("identification.yaw_slip_gain", 1.35);  // γ (traquad.yaw_slip_gain)
     // Yaw posture (R2): delta = delta_max · tanh(wz / omega0) / (1 + |vx| / v0), through two first-order
     // filters tau in cascade (critically damped: the hip speed starts from 0, no steps) and a rate limit
     this->declare_parameter("yaw_posture.delta_max", 0.30);   // rad, common HFE offset (joint coords)
@@ -103,10 +104,28 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     this->declare_parameter("yaw_posture.kp_scale", 1.0);     // hip stiffness (1 = Kp 60 of the SBC)
     this->declare_parameter("yaw_posture.kd_scale", 1.0);
     this->declare_parameter("yaw_posture.stand", 1.6);        // rad, shoulder angle of q_stand
-    this->declare_parameter("yaw_posture.alpha_min", 1.0);    // rad, tracks flat: ankle stops at
-    this->declare_parameter("yaw_posture.alpha_max", 1.9);    //   alpha 0.95 / 1.99
+    this->declare_parameter("yaw_posture.alpha_min", 1.1);    // rad, hips at stand ± delta (ankle
+    this->declare_parameter("yaw_posture.alpha_max", 2.1);    //   stops ±90 deg)
     this->declare_parameter("yaw_posture.stance_tolerance", 0.15);  // rad, standing check at R2
     this->declare_parameter("yaw_posture.period_ms", 10);
+    // Arc band: R = vx / wz close to the effective half track y_eff(δ) asks the inner track ~0
+    // (it pivots and can roll over): δ is moved, stronger or weaker, so that the inner track runs
+    // at least at v_min. y_eff(δ) is the model of the SBC traquad IK (traquad8_dji.yaml)
+    this->declare_parameter("yaw_posture.band.enabled", true);
+    this->declare_parameter("yaw_posture.band.v_min", 1.5);          // rad/s of the inner track
+    this->declare_parameter("yaw_posture.band.delta_max", 0.45);     // rad, strongest posture
+    this->declare_parameter("yaw_posture.band.hysteresis", 0.3);     // fraction of the margin
+    this->declare_parameter("yaw_posture.band.dwell", 0.3);          // s in / out of the band
+    this->declare_parameter("yaw_posture.band.wz_max", 1.0);         // rad/s, twist_max_z of the SBC
+    this->declare_parameter("yaw_posture.band.wheel_rad", 0.045);    // m
+    this->declare_parameter("yaw_posture.band.half_track", 0.2);     // m, track_width / 2
+    this->declare_parameter("yaw_posture.band.yaw_slip_gain", 1.35); // γ
+    this->declare_parameter("yaw_posture.band.posture_gain", 0.29);  // kδ, m/rad
+    this->declare_parameter("yaw_posture.band.shoulder_x", 0.235);   // m
+    this->declare_parameter("yaw_posture.band.leg_length", 0.19);    // m
+    this->declare_parameter("yaw_posture.band.creep_gain", 1.6);     // 1/rad, traquad.creep.gain
+    this->declare_parameter("yaw_posture.band.creep_x0", 0.171);     // m, traquad.creep.x0
+    this->declare_parameter("yaw_posture.band.creep_posture", 0.09); // m/rad², traquad.creep.posture
     this->declare_parameter("identification.record_bag", true);   // ros2 bag record per mission
     this->declare_parameter("identification.bag_dir", std::string("~/mulinex_ws/bags/ident"));
     this->declare_parameter("identification.record_delay", 3.0);  // s, bag subscribing before the start
@@ -788,8 +807,9 @@ void OmniMulinexJoystick::start_identification()
     ident_params_.alpha_min = this->get_parameter("identification.alpha_min").as_double();
     ident_params_.alpha_max = this->get_parameter("identification.alpha_max").as_double();
     ident_params_.pause = this->get_parameter("identification.pause").as_double();
-    ident_params_.spin_forward_drift = this->get_parameter("identification.spin_forward_drift").as_double();
-    ident_params_.yaw_half_track = this->get_parameter("identification.yaw_half_track").as_double();
+    ident_params_.creep_gain = this->get_parameter("identification.creep_gain").as_double();
+    ident_params_.creep_x0 = this->get_parameter("identification.creep_x0").as_double();
+    ident_params_.yaw_slip_gain = this->get_parameter("identification.yaw_slip_gain").as_double();
     try {
         ident_ = std::make_unique<IdentificationMission>(mission, ident_params_);
     } catch (const std::invalid_argument& e) {
@@ -946,7 +966,9 @@ void OmniMulinexJoystick::yaw_posture_step()
     // IK mode (all four HFE joint positions +0.33 rad at wz +1.4): the left tracks move back and
     // the right ones forward, with their belts. Straight driving brings it back to 0
     const double target = posture_active_
-        ? delta_max * std::tanh(posture_wz_cmd_ / omega0) / (1.0 + std::abs(posture_vx_cmd_) / v0)
+        ? yaw_posture_band(
+              delta_max * std::tanh(posture_wz_cmd_ / omega0) / (1.0 + std::abs(posture_vx_cmd_) / v0), dt
+          )
         : 0.0;
     // Two first-order stages: the first one follows the target (steps at 10 Hz from the sticks), the
     // second one gives delta, whose rate (first stage - delta) / tau is continuous and starts from 0
@@ -979,6 +1001,93 @@ void OmniMulinexJoystick::yaw_posture_step()
         posture_timer_.reset();
         RCLCPP_INFO(this->get_logger(), "Yaw posture: back to the cart pose, standard traquad control");
     }
+}
+
+double OmniMulinexJoystick::yaw_posture_band(double target, double dt)
+{
+    auto par = [this](const char* name) { return this->get_parameter(std::string("yaw_posture.band.") + name).as_double(); };
+    auto reset = [this]() {
+        if (band_active_)
+            RCLCPP_INFO(this->get_logger(), "Yaw posture: arc band left, normal posture");
+        band_active_ = false;
+        band_side_ = 0;
+        band_in_time_ = band_out_time_ = 0.0;
+    };
+    if (!this->get_parameter("yaw_posture.band.enabled").as_bool()) {
+        reset();
+        return target;
+    }
+    const double v_min = par("v_min") * par("wheel_rad");   // belt speed of the inner track [m/s]
+    const double vx = posture_vx_cmd_;
+    const double wz = std::clamp(posture_wz_cmd_, -par("wz_max"), par("wz_max"));
+    if (std::abs(vx) < v_min || std::abs(wz) < 0.05) {      // not an arc
+        reset();
+        return target;
+    }
+    // Model of the SBC traquad IK for the R2 shape (hips at stand ± δ): effective half track y_eff
+    // and forward creep d, both lower with δ. The inner track runs at |ωz|·|gap|,
+    //   gap(δ) = |vx − d·|ωz|| / |ωz| − y_eff      (increasing with δ: a stronger posture moves it forward)
+    const double h = par("half_track"), gamma = par("yaw_slip_gain"), k_delta = par("posture_gain");
+    const double c_stand = std::cos(this->get_parameter("yaw_posture.stand").as_double());
+    auto gap = [&](double d) {
+        const double xbar = par("shoulder_x") + par("leg_length") * c_stand * std::cos(d);
+        const double y = h * (1.0 + gamma * (xbar / h) * (xbar / h)) - k_delta * d;
+        const double creep = std::max(par("creep_gain") * (xbar - par("creep_x0")) - par("creep_posture") * d, 0.0);
+        return std::abs(vx - creep * std::abs(wz)) / std::abs(wz) - y;
+    };
+    // at least v_min on the inner track: |gap| ≥ m
+    const double m = v_min / std::abs(wz);
+    const double hyst = par("hysteresis"), dwell = par("dwell");
+    const double d_normal = std::abs(target), d_max = std::max(par("delta_max"), d_normal);
+    const double g_normal = gap(d_normal);
+
+    band_in_time_ = std::abs(g_normal) < m ? band_in_time_ + dt : 0.0;
+    band_out_time_ = std::abs(g_normal) > m * (1.0 + hyst) ? band_out_time_ + dt : 0.0;
+    if (band_active_ && band_out_time_ >= dwell)
+        reset();
+
+    // weakest / strongest posture that clears the band on each side, with 10 % of margin
+    // (bisection, gap monotonic); the hysteresis only delays leaving the band
+    const double margin = 1.1 * m;
+    auto stronger = [&]() -> double {   // smallest δ ≥ d_normal with gap ≥ margin (inner track forward)
+        if (gap(d_max) < margin) return -1.0;
+        double lo = d_normal, hi = d_max;
+        for (int i = 0; i < 30; i++) {
+            const double mid = 0.5 * (lo + hi);
+            (gap(mid) >= margin ? hi : lo) = mid;
+        }
+        return hi;
+    };
+    auto weaker = [&]() -> double {     // largest δ ≤ d_normal with gap ≤ −margin (inner track backward)
+        if (gap(0.0) > -margin) return -1.0;
+        double lo = 0.0, hi = d_normal;
+        for (int i = 0; i < 30; i++) {
+            const double mid = 0.5 * (lo + hi);
+            (gap(mid) <= -margin ? lo : hi) = mid;
+        }
+        return lo;
+    };
+    if (!band_active_ && band_in_time_ >= dwell) {
+        const double up = stronger(), down = weaker();
+        if (up >= 0.0 || down >= 0.0) {
+            // the side that moves the hips less
+            band_side_ = (down < 0.0 || (up >= 0.0 && up - d_normal <= d_normal - down)) ? 1 : -1;
+            band_active_ = true;
+            RCLCPP_INFO(
+                this->get_logger(), "Yaw posture: arc band (R %.2f m, inner track %.2f rad/s), posture %s",
+                std::abs(vx / wz), std::abs(wz) * g_normal / par("wheel_rad"),
+                band_side_ > 0 ? "stronger (inner track forward)" : "weaker (inner track backward)"
+            );
+        }
+    }
+    if (!band_active_)
+        return target;
+    double d = band_side_ > 0 ? stronger() : weaker();
+    if (d < 0.0)   // the radius moved out of reach on this side: the other one, or the IK alone
+        d = band_side_ > 0 ? weaker() : stronger();
+    if (d < 0.0)
+        return target;
+    return std::copysign(d, wz);
 }
 
 void OmniMulinexJoystick::start_bag(const std::string& mission)

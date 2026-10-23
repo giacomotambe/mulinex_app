@@ -110,7 +110,11 @@ IdentSetpoint IdentificationMission::creep_compensated(IdentSetpoint sp) const
     const double sum = std::abs(sp.v_right + sp.v_left), diff = std::abs(sp.v_right - sp.v_left);
     const double load = sum + diff > 1e-9 ? diff / (sum + diff) : 0.0;
     const double half_diff = std::max(diff / 2.0 - p_.turn_deficit * load * p_.sprocket_radius, 0.0);
-    const double creep = p_.spin_forward_drift * half_diff / p_.yaw_half_track;
+    const double xbar = p_.shoulder_x + p_.leg_length * 0.5 * (std::cos(sp.alpha_front) + std::cos(sp.alpha_hind));
+    const double ratio = xbar / p_.half_track;
+    const double y_eff = p_.half_track * (1.0 + p_.yaw_slip_gain * ratio * ratio);
+    const double d = std::max(p_.creep_gain * (xbar - p_.creep_x0), 0.0);
+    const double creep = d * half_diff / y_eff;
     sp.v_left -= creep;
     sp.v_right -= creep;
     return sp;
@@ -160,8 +164,8 @@ void IdentificationMission::sync(double a)
 
 void IdentificationMission::build_t1()
 {
-    // The robot creeps forward while turning, either way (about 6.6 cm/s per rad/s of yaw, Qualisys
-    // 2026-10-22): turning one way then the other moves it sideways, about 0.6 m for each shoulder
+    // The robot creeps forward while turning, either way (6-25 cm/s per rad/s of yaw, more with the
+    // tracks spread out, Qualisys 2026-10-22): turning one way then the other moves it sideways, about 0.6 m for each shoulder
     // angle. The first direction alternates at every speed, across the shoulder angles too, so these
     // moves cancel (simulated: largest distance from the start about 0.6 m instead of 2.3 m)
     const double st = p_.stand;
