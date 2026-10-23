@@ -1,0 +1,7 @@
+# Traquad overrides of joystick_params.yaml, loaded after it with robot:=traquad
+# (ros2 launch omni_bringup omni_bringup.launch.py robot:=traquad). The omniquad keeps joystick_params.yaml.
+omni_mulinex_joystick:
+  ros__parameters:
+    # Full stick = 1 m/s: 22 rad/s at the tracks with wheel_rad 0.045. The SBC must allow it:
+    # twist_max_x 1.0 in traquad8_dji.yaml and track max_velocity 25 in traquad8_dji.xacro
+    sup_vel_x: 1.0

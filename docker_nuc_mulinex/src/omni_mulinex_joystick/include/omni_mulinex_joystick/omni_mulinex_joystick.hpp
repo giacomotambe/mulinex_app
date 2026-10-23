@@ -65,6 +65,9 @@ private:
     void identification_step();
     void publish_identification(const IdentSetpoint& sp);
     void publish_identification_segment(size_t i, double t);
+    void start_yaw_posture();
+    void stop_yaw_posture(const char* reason, bool smooth);
+    void yaw_posture_step();
     void start_bag(const std::string& mission);
     void stop_bag();
 
@@ -144,6 +147,17 @@ private:
     size_t ident_segment_ = 0;
     IdentSetpoint ident_last_;
     rclcpp::TimerBase::SharedPtr ident_timer_;
+
+    // Yaw posture (R2 toggles): the four HFE joints get a common offset delta (joint coordinates)
+    // driven by the commanded yaw rate, so the track footprint shears in the direction the belts
+    // run and the robot turns better; delta goes back to 0 (cart configuration) when driving straight
+    bool posture_active_{false};      // R2 mode on
+    bool posture_releasing_{false};   // R2 mode off, delta still going back to 0
+    double posture_delta_ = 0.0;      // [rad]
+    double posture_filter_ = 0.0;     // first filter stage of delta [rad]
+    double posture_vx_cmd_ = 0.0;     // last commanded twist (sticks)
+    double posture_wz_cmd_ = 0.0;
+    rclcpp::TimerBase::SharedPtr posture_timer_;
 
     // Bag of each mission, recorded by a ros2 bag child process (identification.record_bag)
     pid_t bag_pid_ = -1;

@@ -38,6 +38,29 @@ omni_mulinex_joystick:
       ramp_time:   3.0    # [s] smooth speed ramp at start and end
       holonomic:   false  # false = vx + wz (traquad, differential); true = vx/vy, fixed heading
 
+    # R2 → yaw posture: the legs help the turns. The four HFE joints get a common offset
+    #   delta = delta_max · tanh(wz_cmd / omega0) / (1 + |vx_cmd| / v0)
+    # through two first-order filters tau in cascade (critically damped: the hip speed starts from 0
+    # and has no steps; 0 → full yaw: peak 0.74 rad/s, 95 % in 0.7 s) and the rate limit max_rate
+    # (joint coordinates; the left tracks move back and the right ones forward for a positive yaw,
+    # as the compliant IK mode does by itself), with the normal hip stiffness. Straight driving
+    # brings the robot back to the cart pose; R2 again → back to the standard traquad control.
+    # Shoulder angles clamped to [alpha_min, alpha_max]: the tracks stay flat (ankle stops at
+    # alpha 0.95 / 1.99).
+    yaw_posture:
+      delta_max:        0.30   # [rad] (compliant IK mode: about 0.33, with alpha up to 2.05)
+      omega0:           0.5    # [rad/s]
+      v0:               1.0    # [m/s] posture halved at |vx| = v0 (arcs)
+      tau:              0.15   # [s] each filter stage
+      max_rate:         1.0    # [rad/s] HFE speed limit (only reached reversing the yaw)
+      kp_scale:         1.0    # hip stiffness (1 = Kp 60 of the SBC); lower it to add compliance
+      kd_scale:         1.0
+      stand:            1.6    # [rad]
+      alpha_min:        1.0    # [rad]
+      alpha_max:        1.9    # [rad]
+      stance_tolerance: 0.15   # [rad] R2 starts only standing at stand
+      period_ms:        10     # [ms]
+
     # ○ → identification mission (open loop, tracks and hips commanded directly, wheel mode
     # direct during the mission). Sticks or any other button stop it: tracks to zero, hips held,
     # back to the twist mode. The parameters are read at every ○, e.g.
@@ -49,15 +72,17 @@ omni_mulinex_joystick:
       pause:            20.0   # [s] stop at the stand pose between missions in a row
       stand:            1.6    # [rad] shoulder angle of q_stand (traquad8_dji.yaml)
       alphas:           [1.05, 1.3, 1.6, 1.85]  # [rad] shoulder angles of t1 / t2
-      sprocket_radius:  0.028  # [m] wheel_rad of the SBC
+      sprocket_radius:  0.045  # [m] wheel_rad of the SBC (traquad8_dji.yaml)
       assist_gain:      10.0   # transition_wheels.gain of the SBC: track += -k·q̇_HFE
-      sync_speed:       0.168  # [m/s] belt speed of the sync turns (6 rad/s; Qualisys clock alignment)
+      sync_speed:       0.27   # [m/s] belt speed of the sync turns (6 rad/s; Qualisys clock alignment)
       stance_tolerance: 0.1    # [rad] shoulders must be within this of stand to start t1-t3
       period_ms:        10     # command period [ms]
       speed_ramp:       0.5    # [s] track speed changes as cosine ramps
       max_track_speed:  9.0    # [rad/s] a mission above this is refused (drives: max_velocity 10)
       alpha_min:        1.0    # [rad] shoulder range of the missions (tracks flat, ankles off
       alpha_max:        1.9    #       their stops); a mission outside it is refused
+      spin_forward_drift: 0.066  # [m/rad] both tracks slowed by d·|ωz| (the robot creeps forward while
+      yaw_half_track:   0.556  # [m]   turning): the missions stay in a 2 x 2 m area. 0 = off
       record_bag:       true   # ○ also records a bag of the mission: <bag_dir>/<mission>_<date>_<time>
       bag_dir:          "~/mulinex_ws/bags/ident"   # in the container (host: docker_nuc_mulinex/bags/ident)
       record_delay:     3.0    # [s] the bag subscribes first, robot still; then the mission starts

@@ -95,13 +95,25 @@ IdentSetpoint IdentificationMission::at(double t) const
         sp.v_left = end.v_left + s * (sp.v_left - end.v_left);
         sp.v_right = end.v_right + s * (sp.v_right - end.v_right);
     }
-    return sp;
+    return creep_compensated(sp);
 }
 
 IdentSetpoint IdentificationMission::segment_target(size_t i) const
 {
     const auto& seg = segments_[i];
-    return seg.f(0.5 * seg.duration, starts_[i] + 0.5 * seg.duration);
+    return creep_compensated(seg.f(0.5 * seg.duration, starts_[i] + 0.5 * seg.duration));
+}
+
+IdentSetpoint IdentificationMission::creep_compensated(IdentSetpoint sp) const
+{
+    // both belts slowed by the forward creep of the expected yaw rate (see IdentificationParams)
+    const double sum = std::abs(sp.v_right + sp.v_left), diff = std::abs(sp.v_right - sp.v_left);
+    const double load = sum + diff > 1e-9 ? diff / (sum + diff) : 0.0;
+    const double half_diff = std::max(diff / 2.0 - p_.turn_deficit * load * p_.sprocket_radius, 0.0);
+    const double creep = p_.spin_forward_drift * half_diff / p_.yaw_half_track;
+    sp.v_left -= creep;
+    sp.v_right -= creep;
+    return sp;
 }
 
 void IdentificationMission::hold(
@@ -148,18 +160,24 @@ void IdentificationMission::sync(double a)
 
 void IdentificationMission::build_t1()
 {
+    // The robot creeps forward while turning, either way (about 6.6 cm/s per rad/s of yaw, Qualisys
+    // 2026-10-22): turning one way then the other moves it sideways, about 0.6 m for each shoulder
+    // angle. The first direction alternates at every speed, across the shoulder angles too, so these
+    // moves cancel (simulated: largest distance from the start about 0.6 m instead of 2.3 m)
     const double st = p_.stand;
     double a = st;
+    double first = 1.0;   // +1: counter-clockwise first
     sync(st);
     for (double al : p_.alphas) {
         move(4.0, a, a, al, al);
         hold("stop", 2.0, al, al);
         for (double w : {4.0, 6.0, 8.0}) {   // below about 3 rad/s the tracks stall while turning
-            const double v = w * p_.sprocket_radius;
+            const double v = first * w * p_.sprocket_radius;
             hold("spin", 8.0, al, al, -v, v);
             hold("stop", 2.0, al, al);
             hold("spin", 8.0, al, al, v, -v);
             hold("stop", 2.0, al, al);
+            first = -first;
         }
         a = al;
     }
@@ -177,13 +195,15 @@ void IdentificationMission::build_t2()
     for (double al : p_.alphas) {
         move(4.0, a, a, al, al);
         hold("stop", 2.0, al, al);
+        // 2 x 2 m area: legs of 2 s (about 0.4 m), each run there and back twice, forward first
+        // then backward first, so the robot comes back to the start and its creep cancels
         for (double rho : {0.0, 0.15, -0.15, 0.33, -0.33}) {
             const double vl = v0 * (1.0 - rho), vr = v0 * (1.0 + rho);
             const char* name = rho == 0.0 ? "straight" : "arc";
-            hold(name, 5.0, al, al, vl, vr);
-            hold("stop", 1.5, al, al);
-            hold(name, 5.0, al, al, -vl, -vr);
-            hold("stop", 1.5, al, al);
+            for (double dir : {1.0, -1.0, -1.0, 1.0}) {
+                hold(name, 2.0, al, al, dir * vl, dir * vr);
+                hold("stop", 1.0, al, al);
+            }
         }
         a = al;
     }
@@ -218,13 +238,20 @@ void IdentificationMission::build_t3()
     for (const auto& s : segments_)
         t_wave += s.duration;
     move(5.0, st, st, front(t_wave), hind(t_wave));
-    drive("wave_arc", 12.0, v0 * (1.0 - rho), v0 * (1.0 + rho));
-    drive("wave_arc", 12.0, v0 * (1.0 + rho), v0 * (1.0 - rho));
-    drive("wave_arc", 12.0, -v0 * (1.0 - rho), -v0 * (1.0 + rho));
-    drive("wave_arc", 12.0, -v0 * (1.0 + rho), -v0 * (1.0 - rho));
+    // 2 x 2 m area: legs of 2 s (about 0.45 m) there and back, left and right arcs in turn, over
+    // more than two periods of the wave (40 s; the shoulders keep moving at the stops too)
+    double t_drive = 0.0;
+    for (int k = 0; k < 8; k++) {
+        const double s = k % 2 == 0 ? 1.0 : -1.0;   // left / right arc
+        for (double dir : {1.0, -1.0}) {
+            drive("wave_arc", 2.0, dir * v0 * (1.0 - s * rho), dir * v0 * (1.0 + s * rho));
+            drive("wave_hold", 0.5, 0.0, 0.0);
+            t_drive += 2.5;
+        }
+    }
     drive("wave_spin", 10.0, -v0, v0);
     drive("wave_hold", 5.0, 0.0, 0.0);
-    const double t_end = t_wave + 63.0;
+    const double t_end = t_wave + t_drive + 15.0;
     move(5.0, front(t_end), hind(t_end), st, st);
     sync(st);
 }

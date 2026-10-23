@@ -82,15 +82,31 @@ OmniMulinexJoystick::OmniMulinexJoystick(): Node("omni_mulinex_joystick")
     this->declare_parameter("identification.pause", 20.0);           // s, between missions in a row
     this->declare_parameter("identification.stand", 1.6);      // rad, shoulder angle of q_stand
     this->declare_parameter("identification.alphas", std::vector<double>{1.05, 1.3, 1.6, 1.85});
-    this->declare_parameter("identification.sprocket_radius", 0.028);  // m, wheel_rad of the SBC
+    this->declare_parameter("identification.sprocket_radius", 0.045);  // m, wheel_rad of the SBC
     this->declare_parameter("identification.assist_gain", 10.0);       // transition_wheels.gain
-    this->declare_parameter("identification.sync_speed", 0.168);       // m/s (6 rad/s)
+    this->declare_parameter("identification.sync_speed", 0.27);        // m/s (6 rad/s)
     this->declare_parameter("identification.stance_tolerance", 0.1);   // rad
     this->declare_parameter("identification.period_ms", 10);
     this->declare_parameter("identification.speed_ramp", 0.5);       // s, track speed ramps
     this->declare_parameter("identification.max_track_speed", 9.0);  // rad/s, drives limited to 10
     this->declare_parameter("identification.alpha_min", 1.0);        // rad, tracks flat / ankle stops
     this->declare_parameter("identification.alpha_max", 1.9);
+    this->declare_parameter("identification.spin_forward_drift", 0.066);  // m/rad, 0 = off
+    this->declare_parameter("identification.yaw_half_track", 0.556);      // m
+    // Yaw posture (R2): delta = delta_max · tanh(wz / omega0) / (1 + |vx| / v0), through two first-order
+    // filters tau in cascade (critically damped: the hip speed starts from 0, no steps) and a rate limit
+    this->declare_parameter("yaw_posture.delta_max", 0.30);   // rad, common HFE offset (joint coords)
+    this->declare_parameter("yaw_posture.omega0", 0.5);       // rad/s, yaw rate of ~76 % of delta_max
+    this->declare_parameter("yaw_posture.v0", 1.0);           // m/s, posture halved at |vx| = v0
+    this->declare_parameter("yaw_posture.tau", 0.15);         // s, time constant of each filter stage
+    this->declare_parameter("yaw_posture.max_rate", 1.0);     // rad/s, HFE speed limit of the posture
+    this->declare_parameter("yaw_posture.kp_scale", 1.0);     // hip stiffness (1 = Kp 60 of the SBC)
+    this->declare_parameter("yaw_posture.kd_scale", 1.0);
+    this->declare_parameter("yaw_posture.stand", 1.6);        // rad, shoulder angle of q_stand
+    this->declare_parameter("yaw_posture.alpha_min", 1.0);    // rad, tracks flat: ankle stops at
+    this->declare_parameter("yaw_posture.alpha_max", 1.9);    //   alpha 0.95 / 1.99
+    this->declare_parameter("yaw_posture.stance_tolerance", 0.15);  // rad, standing check at R2
+    this->declare_parameter("yaw_posture.period_ms", 10);
     this->declare_parameter("identification.record_bag", true);   // ros2 bag record per mission
     this->declare_parameter("identification.bag_dir", std::string("~/mulinex_ws/bags/ident"));
     this->declare_parameter("identification.record_delay", 3.0);  // s, bag subscribing before the start
@@ -290,6 +306,22 @@ void OmniMulinexJoystick::joy_callback(const sensor_msgs::msg::Joy::SharedPtr ms
         else if (btn_rising(0) || btn_rising(2) || btn_rising(4) || btn_rising(5))
             stop_figure_eight("service button pressed");
     }
+
+    // ── Yaw posture ──────────────────────────────────────────────────────
+    // R2 (btn 7) → toggle the leg-assisted yaw control (back to the cart pose smoothly when off)
+    if (btn_rising(7)) {
+        if (posture_active_)
+            stop_yaw_posture("R2 pressed", true);
+        else if (demo_active_ || figure_eight_active_ || ident_active_)
+            RCLCPP_WARN(this->get_logger(), "Yaw posture ignored: demo, figure-eight or identification running");
+        else
+            start_yaw_posture();
+    }
+    // Buttons that change the robot state or start another mode take the hips back at once
+    if ((posture_active_ || posture_releasing_) &&
+        (btn_rising(0) || btn_rising(1) || btn_rising(2) || btn_rising(3) || btn_rising(5) || btn_rising(8) ||
+         btn_rising(9)))
+        stop_yaw_posture("button pressed", false);
 
     // ── Identification missions ───────────────────────────────────────────
     // ○ (btn 1) → start / stop the mission in identification.mission
@@ -672,6 +704,8 @@ void OmniMulinexJoystick::timer_callback()
         twist_msg.linear.x = joy_left_y_ * sup_vel_x_;
         twist_msg.linear.y = joy_left_x_ * sup_vel_y_;
         twist_msg.angular.z = joy_right_x_ * sup_omega_;
+        posture_vx_cmd_ = twist_msg.linear.x;   // yaw posture follows the commanded twist
+        posture_wz_cmd_ = twist_msg.angular.z;
 
         // Right stick Y → height rate (only when IK active)
         if (ik_active_) {
@@ -683,6 +717,7 @@ void OmniMulinexJoystick::timer_callback()
         twist_msg.linear.x = 0.0;
         twist_msg.linear.y = 0.0;
         twist_msg.angular.z = 0.0;
+        posture_vx_cmd_ = posture_wz_cmd_ = 0.0;
 
         // Sticks → body orientation rate (only when IK active)
         if (ik_active_) {
@@ -753,6 +788,8 @@ void OmniMulinexJoystick::start_identification()
     ident_params_.alpha_min = this->get_parameter("identification.alpha_min").as_double();
     ident_params_.alpha_max = this->get_parameter("identification.alpha_max").as_double();
     ident_params_.pause = this->get_parameter("identification.pause").as_double();
+    ident_params_.spin_forward_drift = this->get_parameter("identification.spin_forward_drift").as_double();
+    ident_params_.yaw_half_track = this->get_parameter("identification.yaw_half_track").as_double();
     try {
         ident_ = std::make_unique<IdentificationMission>(mission, ident_params_);
     } catch (const std::invalid_argument& e) {
@@ -784,6 +821,7 @@ void OmniMulinexJoystick::start_identification()
         return;
     }
     deactivate_ik();   // the IK controller would also publish joints_reference
+    stop_yaw_posture("identification started", false);
     auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
     req->data = true;
     wheel_mode_client_->async_send_request(req);
@@ -840,6 +878,106 @@ void OmniMulinexJoystick::stop_identification(const char* reason)
             bag_stop_timer_->cancel();
             stop_bag();
         });
+    }
+}
+
+void OmniMulinexJoystick::start_yaw_posture()
+{
+    // the posture is an offset from the stand pose: start only from there
+    const double stand = this->get_parameter("yaw_posture.stand").as_double();
+    const double tol = this->get_parameter("yaw_posture.stance_tolerance").as_double();
+    if (hfe_pos_.size() < kLegs.size()) {
+        RCLCPP_ERROR(this->get_logger(), "Yaw posture refused: no HFE positions from /omni_controller/joints_state");
+        return;
+    }
+    for (const auto& leg : kLegs) {
+        const double alpha = leg.sigma * hfe_pos_[leg.hfe];
+        if (std::abs(alpha - stand) > tol) {
+            RCLCPP_ERROR(
+                this->get_logger(), "Yaw posture refused: %s at %.2f rad, not standing at %.2f (press △)",
+                leg.hfe, alpha, stand
+            );
+            return;
+        }
+    }
+    deactivate_ik();   // the IK controller would also publish joints_reference
+    posture_delta_ = posture_filter_ = 0.0;
+    posture_active_ = true;
+    posture_releasing_ = false;
+    if (!posture_timer_) {
+        posture_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(this->get_parameter("yaw_posture.period_ms").as_int()),
+            std::bind(&OmniMulinexJoystick::yaw_posture_step, this)
+        );
+    }
+    RCLCPP_INFO(this->get_logger(), "Yaw posture ON (R2): hips follow the yaw command");
+}
+
+void OmniMulinexJoystick::stop_yaw_posture(const char* reason, bool smooth)
+{
+    posture_active_ = false;
+    if (smooth) {
+        // keep stepping until delta is back to 0, then yaw_posture_step() stops the timer
+        posture_releasing_ = true;
+        RCLCPP_INFO(this->get_logger(), "Yaw posture OFF (%s): back to the cart pose", reason);
+        return;
+    }
+    posture_releasing_ = false;
+    if (posture_timer_) {
+        posture_timer_->cancel();
+        posture_timer_.reset();
+    }
+    RCLCPP_INFO(this->get_logger(), "Yaw posture OFF (%s)", reason);
+}
+
+void OmniMulinexJoystick::yaw_posture_step()
+{
+    const double dt = this->get_parameter("yaw_posture.period_ms").as_int() * 1e-3;
+    const double delta_max = this->get_parameter("yaw_posture.delta_max").as_double();
+    const double omega0 = this->get_parameter("yaw_posture.omega0").as_double();
+    const double v0 = this->get_parameter("yaw_posture.v0").as_double();
+    const double tau = std::max(this->get_parameter("yaw_posture.tau").as_double(), dt);
+    const double max_rate = this->get_parameter("yaw_posture.max_rate").as_double();
+    const double stand = this->get_parameter("yaw_posture.stand").as_double();
+    const double a_min = this->get_parameter("yaw_posture.alpha_min").as_double();
+    const double a_max = this->get_parameter("yaw_posture.alpha_max").as_double();
+
+    // Target: positive delta for positive (counter-clockwise) yaw, as measured with the compliant
+    // IK mode (all four HFE joint positions +0.33 rad at wz +1.4): the left tracks move back and
+    // the right ones forward, with their belts. Straight driving brings it back to 0
+    const double target = posture_active_
+        ? delta_max * std::tanh(posture_wz_cmd_ / omega0) / (1.0 + std::abs(posture_vx_cmd_) / v0)
+        : 0.0;
+    // Two first-order stages: the first one follows the target (steps at 10 Hz from the sticks), the
+    // second one gives delta, whose rate (first stage - delta) / tau is continuous and starts from 0
+    // (0 → full yaw: peak 0.74 rad/s at tau 0.15 s, 95 % in 0.7 s)
+    posture_filter_ += dt / tau * (target - posture_filter_);
+    const double rate = std::clamp((posture_filter_ - posture_delta_) / tau, -max_rate, max_rate);
+    posture_delta_ += rate * dt;
+
+    pi3hat_moteus_int_msgs::msg::JointsCommand legs;
+    const double kp = this->get_parameter("yaw_posture.kp_scale").as_double();
+    const double kd = this->get_parameter("yaw_posture.kd_scale").as_double();
+    for (const auto& leg : kLegs) {
+        // q = sigma·alpha_stand + delta, with alpha kept where the tracks stay flat
+        const double alpha = stand + leg.sigma * posture_delta_;
+        const double alpha_c = std::clamp(alpha, a_min, a_max);
+        legs.name.push_back(leg.hfe);
+        legs.position.push_back(leg.sigma * alpha_c);
+        legs.velocity.push_back(alpha_c == alpha ? rate : 0.0);
+        legs.effort.push_back(0.0);
+        legs.kp_scale.push_back(kp);
+        legs.kd_scale.push_back(kd);
+    }
+    legs.header.stamp = this->now();
+    hips_pub_->publish(legs);
+
+    if (posture_releasing_ && std::abs(posture_delta_) < 1e-3 && std::abs(posture_filter_) < 1e-3) {
+        posture_releasing_ = false;
+        posture_delta_ = posture_filter_ = 0.0;
+        posture_timer_->cancel();
+        posture_timer_.reset();
+        RCLCPP_INFO(this->get_logger(), "Yaw posture: back to the cart pose, standard traquad control");
     }
 }
 
@@ -1024,6 +1162,7 @@ void OmniMulinexJoystick::print_instructions()
                             "║  □  → ACTIVATE IK     ✕  → REST                            ║\n"
                             "║  △  → STAND           ○  → start/stop identification       ║\n"
                             "║  SELECT → toggle demo cycle   START → toggle figure-eight  ║\n"
+                            "║  R2 → toggle yaw posture (legs help the turns)             ║\n"
                             "║  L3 → reset wheels    R3 → reset body pose                 ║\n"
                             "║  PS → reset ALL                                            ║\n"
                             "╚════════════════════════════════════════════════════════════╝"

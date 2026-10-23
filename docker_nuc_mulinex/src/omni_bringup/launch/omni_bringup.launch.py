@@ -79,6 +79,11 @@ def generate_launch_description():
         'record_bag',
         default_value='false',
     )
+    # robot:=traquad loads the traquad joystick parameters (full stick 1 m/s)
+    robot_arg = DeclareLaunchArgument(
+        'robot',
+        default_value='omniquad',
+    )
 
     nuc_heartbeat = Node(
         package='omni_bringup',
@@ -95,7 +100,8 @@ def generate_launch_description():
                 'launch',
                 'joystick.launch.py',
             )
-        )
+        ),
+        launch_arguments={'robot': LaunchConfiguration('robot')}.items(),
     )
 
     ik_controller_launch = IncludeLaunchDescription(
@@ -110,6 +116,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         record_bag_arg,
+        robot_arg,
         nuc_heartbeat,
         joystick_launch,
         ik_controller_launch,
